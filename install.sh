@@ -97,10 +97,19 @@ for f in $FILES; do
   dst="$PREFIX/$f"
   [ -r "$src" ] || { warn "missing $src"; exit 1; }
   rm -f "$dst"
-  if [ "$LINK" = 1 ] && ln -s "$src" "$dst" 2>/dev/null; then
+  # `ln -s` exiting 0 is not proof of a symlink: MSYS2 and Cygwin fall back to
+  # copying when the OS will not grant a native link, and still report success.
+  # Test the result rather than the exit code, or --link quietly becomes --copy
+  # while claiming otherwise.
+  if [ "$LINK" = 1 ] && ln -s "$src" "$dst" 2>/dev/null && [ -L "$dst" ]; then
     say "linked  $dst -> $src"
   else
-    [ "$LINK" = 1 ] && warn "could not symlink $f (needs Developer Mode on Windows), copied instead"
+    if [ "$LINK" = 1 ]; then
+      rm -f "$dst"
+      warn "$f: could not create a real symlink — copied instead."
+      warn "    (Windows needs Developer Mode, or MSYS=winsymlinks:nativestrict.)"
+      warn "    Re-run this installer after editing the repo to update it."
+    fi
     cp "$src" "$dst"
     say "copied  $dst"
   fi
