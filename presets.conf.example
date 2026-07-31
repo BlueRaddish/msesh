@@ -1,0 +1,29 @@
+# msesh presets — copy to ~/.config/msesh/presets.conf and edit.
+#
+# One `name = command` per line. These override the built-ins of the same name,
+# so redefining `claude` here changes what a bare `msesh 4` launches.
+#
+# A preset whose command runs claude is detected as a claude pane: it gets
+# --effort injected when you pass -e, and it is what -X leaves pre-typed rather
+# than started. Everything else is run as-is.
+#
+# `msesh -P` lists what is currently defined, built-ins first.
+
+# --- built-ins, shown here so you can see the shape ---------------------------
+# claude = claude --remote-control --dangerously-skip-permissions
+# cly    = claude --remote-control --dangerously-skip-permissions
+# plan   = claude --remote-control --permission-mode plan
+# safe   = claude --remote-control
+# bash   = bash -i          (also: sh)
+# pwsh   = powershell.exe -NoLogo   (also: ps)
+# cmd    = cmd.exe
+
+# --- your own ----------------------------------------------------------------
+# A claude pane that starts in a specific repo:
+# work = cd /c/Users/me/projects/thing && claude --remote-control
+
+# A pane that watches a build:
+# watch = npm run dev
+
+# A pane for logs:
+# logs = tail -f /var/log/whatever.log

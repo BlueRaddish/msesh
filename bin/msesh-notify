@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# msesh-notify — desktop toast for msesh sessions.
+#
+# Two modes:
+#   msesh-notify "Title" "Body"   pop a toast right now
+#   msesh-notify                  scan tmux for msesh windows that have gone
+#                                 quiet or rung the bell, and toast those
+#
+# The scan form is what msesh wires into tmux's alert-silence / alert-bell
+# hooks. A pane that has produced no output for a while is, in practice, a pane
+# waiting on you — that is the signal, and it works for claude and for anything
+# else you put in a pane.
+#
+# tmux only raises window alerts for windows you are not currently looking at,
+# which is the behaviour you want: no toast for the pane already on screen.
+#
+# Called by tmux via run-shell, so it must stay MSYS2-side and quiet.
+
+set -uo pipefail
+
+TMUX_BIN=${TMUX_BIN:-$(command -v tmux || echo /c/msys64/usr/bin/tmux.exe)}
+PS_BIN=${PS_BIN:-powershell.exe}
+
+# --- the toast itself --------------------------------------------------------
+# Text crosses into PowerShell through the environment rather than the command
+# line, so quotes and spaces in a session name cannot break the script or be
+# read as PowerShell syntax. XML-escaping happens on the far side.
+toast() {
+  MSESH_TITLE=$1 MSESH_BODY=$2 "$PS_BIN" -NoLogo -NoProfile -NonInteractive -Command '
+$t = [Security.SecurityElement]::Escape($env:MSESH_TITLE)
+$b = [Security.SecurityElement]::Escape($env:MSESH_BODY)
+try {
+  [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime]
+  [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType=WindowsRuntime]
+  $xml = "<toast><visual><binding template=""ToastGeneric""><text>$t</text><text>$b</text></binding></visual></toast>"
+  $doc = New-Object Windows.Data.Xml.Dom.XmlDocument
+  $doc.LoadXml($xml)
+  $toast = New-Object Windows.UI.Notifications.ToastNotification $doc
+  $aumid = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
+  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($aumid).Show($toast)
+} catch {
+  # WinRT toasts are unavailable in some session types (services, older
+  # builds); a tray balloon still gets the message across.
+  Add-Type -AssemblyName System.Windows.Forms
+  $n = New-Object System.Windows.Forms.NotifyIcon
+  $n.Icon = [System.Drawing.SystemIcons]::Information
+  $n.BalloonTipTitle = $env:MSESH_TITLE
+  $n.BalloonTipText  = $env:MSESH_BODY
+  $n.Visible = $true
+  $n.ShowBalloonTip(10000)
+  Start-Sleep -Seconds 11
+  $n.Dispose()
+}' >/dev/null 2>&1 &
+}
+
+if [ $# -ge 1 ]; then
+  toast "$1" "${2:-}"
+  exit 0
+fi
+
+# --- scan mode ---------------------------------------------------------------
+# Only sessions msesh built are considered: it stamps @msesh on each of them.
+# Formats are safe here — this runs inside MSYS2, talking to the MSYS2 tmux,
+# so nothing rewrites the argv on the way across.
+mapfile -t rows < <(
+  "$TMUX_BIN" list-windows -a \
+    -F '#{session_name}|#{window_index}|#{window_name}|#{window_silence_flag}#{window_activity_flag}#{window_bell_flag}|#{@msesh}|#{@msesh_notified}' \
+    2>/dev/null
+)
+
+for row in ${rows[@]+"${rows[@]}"}; do
+  IFS='|' read -r sess widx wname flags stamp notified <<< "$row"
+  [ "$stamp" = 1 ] || continue
+
+  if [ "$flags" = "000" ]; then
+    # Alert cleared (you looked at it) — re-arm so the next one toasts again.
+    [ -n "$notified" ] && "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified "" 2>/dev/null
+    continue
+  fi
+
+  [ -n "$notified" ] && continue          # already toasted this alert
+  "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified 1 2>/dev/null
+
+  # Name the panes so you know which one to go to without switching first.
+  labels=$("$TMUX_BIN" list-panes -t "$sess:$widx" -F '#{@label}' 2>/dev/null \
+           | paste -sd ', ' - 2>/dev/null)
+  [ -n "$labels" ] || labels=$wname
+
+  toast "msesh: $sess waiting" "window $wname ($labels) has gone quiet — it is probably waiting on you"
+done
