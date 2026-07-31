@@ -32,7 +32,7 @@ $ msesh -s work                 # later: re-attach, or rebuild it if it died
 ## Install
 
 ```sh
-git clone https://github.com/USER/msesh
+git clone https://github.com/BlueRaddish/msesh
 cd msesh
 ./install.sh                 # copies bin/* into ~/bin
 ```
