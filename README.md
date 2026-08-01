@@ -74,6 +74,9 @@ Every command is a word, not a flag. `msesh help` lists them; `msesh help TOPIC`
 | `msesh kill [NAME]` | kill a session and everything in it (`--all` for every one) |
 | `msesh forget NAME` | drop a session's manifest so it stops being restored |
 | `msesh list` | live sessions, layouts and recorded sessions |
+| `msesh status [NAME]` | what each pane is doing, and which window is waiting |
+| `msesh send NAME TEXT` | type TEXT into every agent pane of NAME (`--all` for every pane) |
+| `msesh doctor` | check this machine: tmux, MSYS2, PATH, config files |
 | `msesh preset ...` | name one pane: `list`, `show NAME`, `make [NAME]`, `remove NAME`, `edit` |
 | `msesh layout ...` | name a whole session: `list`, `show`, `make`, `save`, `remove`, `edit` |
 | `msesh help [TOPIC]` | topics: `specs`, `options`, `preset`, `layout`, `agents`, `files`, `env` |
@@ -210,8 +213,68 @@ Genuinely Claude-specific behaviour stays under Claude-specific names: the `clau
 | `-e LIST` | effort levels for agent panes, in pane order — `l`/`m`/`h`/`x`, or `ladder` for low,medium,high; the last repeats for panes left over |
 | `-w N` | max panes per window before spilling (default: 4, `0` for one window) |
 | `--lazy` | pre-type agent panes' commands without running them |
+| `--windows LIST` | name the windows this build creates, in order — `repo,logs`; names run out silently |
+| `-n`, `--dry-run` | print the panes, commands and window split, then stop |
 | `--notify SECS` | toast after this much silence (default: 20, `0` = off) |
 | `--no-tab` | build the session without opening a terminal tab |
+
+## Checking before you build
+
+`--dry-run` resolves the whole command — specs, presets, the agent table, effort assignment, the window split — and prints it instead of building it. Nothing starts, no manifest is written.
+
+```console
+$ msesh build quad -n
+msesh: would build 'quad' — 4 pane(s) in /c/Users/me
+  window m1
+    claude/low             claude --remote-control --effort low
+    claude/medium          claude --remote-control --effort medium
+    claude/high            claude --remote-control --effort high
+    claude/xhigh           claude --remote-control --effort xhigh
+  1 window(s), 4 pane(s) per window, toast after 20s of silence
+msesh: nothing was built (--dry-run)
+```
+
+Once it is running, `msesh status` answers the same question from the other side — from any shell, without attaching:
+
+```console
+$ msesh status
+work:
+  window 1 (repo) — waiting
+    1  claude/high            finished — shell only
+    2  claude/low             running
+  window 2 (logs)
+    1  npm                    running
+```
+
+"Waiting" is per window, because tmux's silence flag is: a window counts as silent only once every pane in it is. Whether a *pane* has finished is recorded by the pane itself as its command exits — tmux can only report the wrapper shell, so asking it from outside cannot tell a working pane from a finished one.
+
+`msesh doctor` checks the machine rather than the session: tmux, MSYS2, Windows Terminal, whether the install directory is on the **User `PATH` in the registry** (the failure that makes msesh work in bash and look broken everywhere else), whether the installed copy has drifted from your clone, and whether the config files and directories are readable and writable.
+
+## Talking to every pane at once
+
+```console
+$ msesh send work "/clear"
+msesh: sent to 3 pane(s) in 'work' — claude/low, claude/medium, claude/high
+msesh: skipped 1 non-agent pane(s)
+```
+
+Agent panes only by default — a shared prompt does not belong in a shell — with `--all` to include everything and `--no-enter` to leave the line typed but not submitted. The session must be named explicitly: there is no default, because typing into the wrong four agents at once is the mistake worth designing out.
+
+## Tab completion
+
+```console
+$ msesh la<TAB>              → msesh layout
+$ msesh build cl<TAB>        → msesh build claude-quad
+$ msesh layout <TAB>         → list  make  save  show  remove  edit
+```
+
+`completion/msesh.bash` and `completion/msesh.ps1` are sourced from the clone rather than copied, so `git pull` keeps them current. `./install.sh` prints the one line to add to `~/.bashrc` or `$PROFILE` — it will not edit either for you.
+
+Both ask `msesh complete-names KIND`, which prints one name per line and nothing else, so the human-readable listings stay free to change.
+
+## Tests
+
+`./test.sh` — 60 checks over spec resolution, effort against the agent table, layout resolution, the preset file rewrite and the manifest round-trip. Everything goes through `--dry-run`, so no tmux session is built and the run takes about a second. `-v` lists each check.
 
 ## Configuration
 
