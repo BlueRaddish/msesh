@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
 # msesh-notify — desktop toast for msesh sessions.
 #
-# Two modes:
-#   msesh-notify "Title" "Body"   pop a toast right now
+# Three modes:
+#   msesh-notify --turn-end       a specific pane has finished its turn; the
+#                                 agent itself says so, via a Stop hook
 #   msesh-notify                  scan tmux for msesh windows that have gone
 #                                 quiet or rung the bell, and toast those
+#   msesh-notify "Title" "Body"   pop a toast right now
 #
-# The scan form is what msesh wires into tmux's alert-silence / alert-bell
-# hooks. A pane that has produced no output for a while is, in practice, a pane
-# waiting on you — that is the signal, and it works for claude and for anything
-# else you put in a pane.
+# --turn-end is the good signal and the scan is the fallback. An agent that
+# tells you it has finished is exact and immediate; silence is a guess that is
+# both late (by the whole timeout) and wrong in either direction — an agent
+# thinking quietly looks finished, and one printing steadily never alerts. The
+# scan still earns its place for panes that are not agents: a build, a test run,
+# a REPL, none of which will ever call a hook.
 #
 # tmux only raises window alerts for windows you are not currently looking at,
 # which is the behaviour you want: no toast for the pane already on screen.
+# --turn-end keeps that rule deliberately, by checking the pane's window is not
+# the current one before it says anything.
 #
-# Called by tmux via run-shell, so it must stay MSYS2-side and quiet.
+# Called by tmux via run-shell and by Claude Code via its Stop hook, so it must
+# stay quiet and must never fail in a way that reaches the agent's output.
 
 set -uo pipefail
 
@@ -30,6 +37,47 @@ TMUX_BIN=$(plat_tmux)
 # desktop notifier at all. Backgrounded because some notifiers block for the
 # lifetime of the notification and nothing here is worth waiting on.
 toast() { plat_notify "$1" "${2:-}" & }
+
+# --- turn-end mode ------------------------------------------------------------
+# Called from the agent's own Stop hook, inside the pane that finished. Every
+# failure here is silent and successful: this runs in the agent's process tree,
+# and a notifier that prints an error into someone's session is worse than one
+# that quietly does nothing.
+if [ "${1:-}" = "--turn-end" ]; then
+  pane=${2:-${TMUX_PANE:-}}
+  [ -n "$pane" ] || exit 0                     # not in tmux; nothing to mark
+  [ -x "$TMUX_BIN" ] || command -v "$TMUX_BIN" >/dev/null 2>&1 || exit 0
+
+  info=$("$TMUX_BIN" display-message -t "$pane" -p \
+    '#{session_name}|#{window_index}|#{@label}|#{@msesh}|#{window_active}|#{session_attached}' \
+    2>/dev/null) || exit 0
+  IFS='|' read -r sess widx label stamp wactive sattached <<< "$info"
+  [ "$stamp" = 1 ] || exit 0                   # not a session msesh built
+
+  # The pane records that it is waiting, whether or not anything is said out
+  # loud — 'msesh status' reads this, and it is the only per-pane record of
+  # "finished a turn" that exists.
+  "$TMUX_BIN" set-option -p -t "$pane" @turn waiting 2>/dev/null
+
+  # On screen and being watched: the human already knows. Same rule tmux
+  # applies to its own alerts, kept deliberately rather than inherited.
+  if [ "$wactive" = 1 ] && [ "$sattached" -gt 0 ] 2>/dev/null; then exit 0; fi
+
+  # Mark the window the way the silence path would, so the two agree about what
+  # a waiting window looks like.
+  "$TMUX_BIN" set-window-option -t "$sess:$widx" @alert 1 2>/dev/null
+  "$TMUX_BIN" set-window-option -t "$sess:$widx" pane-border-style "fg=colour196,bold" 2>/dev/null
+  "$TMUX_BIN" set-window-option -t "$sess:$widx" pane-active-border-style "fg=colour196,bold" 2>/dev/null
+  # Suppress the silence scan's toast for this alert: the turn-end message is
+  # better in every way and arrives first, so the timer's version is noise.
+  "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified 1 2>/dev/null
+  "$TMUX_BIN" refresh-client -S 2>/dev/null
+
+  prefix=$("$TMUX_BIN" show-options -gv prefix 2>/dev/null || echo prefix)
+  toast "msesh: ${label:-a pane} finished — $sess" \
+        "Window $widx is waiting on you. Go to the '$sess' tab, then press ${prefix:-prefix} $widx."
+  exit 0
+fi
 
 if [ $# -ge 1 ]; then
   toast "$1" "${2:-}"
@@ -90,6 +138,13 @@ for row in ${rows[@]+"${rows[@]}"}; do
     [ -n "$notified" ] &&
       "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified "" 2>/dev/null
     [ -n "$alerted" ] && highlight_off "$sess:$widx"
+    # Whatever set a pane's @turn, looking at the window answers it. Cleared
+    # here rather than in the turn-end path because tmux has a hook for an
+    # alert being raised and none for one being cleared — switching windows is
+    # what clears an alert, and this function is what runs when you switch.
+    while IFS= read -r _p; do
+      [ -n "$_p" ] && "$TMUX_BIN" set-option -p -t "$_p" -u @turn 2>/dev/null
+    done < <("$TMUX_BIN" list-panes -t "$sess:$widx" -F '#{pane_id}' 2>/dev/null)
     continue
   fi
 

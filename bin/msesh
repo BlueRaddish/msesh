@@ -97,6 +97,7 @@ FORGET=
 ATTACH_ONLY=0
 PRESET_SUB=
 LAYOUT_SUB=
+HOOKS_SUB=
 
 # Set by the option loop when the corresponding flag actually appears on the
 # command line. manifest_load consults these to decide what you overrode: it
@@ -123,6 +124,12 @@ MSESH_VERSION=1.0.0
 # files said what they were. Files written before 0.6.0 carry no version and
 # are read as 1, which is what they are.
 MSESH_FORMAT=1
+
+# Claude Code's two files. The first holds the workspace-trust record msesh
+# pre-seeds; the second holds hooks, and is where 'msesh hooks' installs the
+# turn-end signal. Both are Claude Code's, not msesh's, which is why everything
+# that touches them says so in its name.
+CLAUDE_SETTINGS=${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}
 
 # --- agents ------------------------------------------------------------------
 # Some panes hold an interactive coding agent rather than a shell, and two of
@@ -588,7 +595,7 @@ help_topic() {
 # — the flag-per-action scheme this replaces — meant the difference between
 # building a session and destroying every session was one shifted keystroke
 # (-k / -K), and nothing on the command line said which you had asked for.
-COMMANDS="build rebuild add attach restore kill forget list status send preset layout doctor help version"
+COMMANDS="build rebuild add attach restore kill forget list status send preset layout doctor hooks help version"
 
 # Did-you-mean. A prefix match either way round is not enough on its own — it
 # gets 'lst' but not 'buld', and a dropped letter in the middle is the typo
@@ -641,6 +648,7 @@ case $CMD in
   list)               ACTION=list ;;
   status)             ACTION=status ;;
   doctor|check)       ACTION=doctor ;;
+  hooks)              ACTION=hooks ;;
   send)               ACTION=send ;;
   # Undocumented on purpose: this is the completion scripts' data source, not
   # a verb for people. One name per line, no headers, no styling — 'msesh
@@ -738,6 +746,8 @@ case $ACTION in
     fi
     take_session_name
     FORGET=$SESSION ;;
+  hooks)
+    HOOKS_SUB=${ARGS[0]:-status} ;;
   names)
     : ;;                                # its positional is read where it is used
   preset)
@@ -1323,6 +1333,138 @@ case $ACTION in
     fi
     [ "$skipped" != 0 ] && echo "msesh: skipped $skipped non-agent pane(s)"
     exit 0 ;;
+  hooks)
+    # Claude Code fires a Stop hook the moment a turn ends. That is the signal
+    # msesh spent its whole life not having: silence monitoring is a guess that
+    # is late by the length of the timeout and wrong in both directions. One
+    # line in the user's settings turns the guess into a fact.
+    #
+    # This is the most invasive thing msesh does. ~/.claude/settings.json is not
+    # msesh's file — it belongs to Claude Code and it commonly carries hooks the
+    # user wrote, which on this machine include a WIP autocommit and a session
+    # archiver. A bad write there does not break msesh; it silently stops the
+    # user's own hooks running, and they find out days later. So:
+    #
+    #   append-only   msesh never rewrites, reorders or drops an entry it did
+    #                 not create
+    #   tagged        every entry msesh writes carries "_msesh": 1, so remove
+    #                 takes exactly its own and nothing adjacent
+    #   backed up     settings.json.msesh-backup, written before any change
+    #   idempotent    installing twice changes nothing the second time
+    #   inspectable   status is read-only, --dry-run prints and writes nothing
+    py=$(command -v python3 || command -v python || true)
+    [ -n "$py" ] || die "hooks needs python (it edits a JSON file safely)"
+    NOTIFIER=${MSESH_NOTIFIER:-$SELF_DIR/msesh-notify}
+    # An absolute path, resolved now: the hook runs in the agent's environment,
+    # which may not have this directory on PATH at all.
+    hook_cmd="\"$NOTIFIER\" --turn-end"
+    dry=0
+    case " ${ARGS[*]} " in *" --dry-run "*) dry=1 ;; esac
+    "$py" - "$CLAUDE_SETTINGS" "$HOOKS_SUB" "$hook_cmd" "$dry" <<'PY'
+import json, os, shutil, sys
+
+path, action, hook_cmd, dry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == '1'
+EVENT = 'Stop'
+
+try:
+    with open(path, encoding='utf-8') as fh:
+        cfg = json.load(fh)
+except FileNotFoundError:
+    cfg = {}
+except ValueError as e:
+    print("msesh: %s is not valid JSON (%s) — refusing to touch it" % (path, e),
+          file=sys.stderr)
+    sys.exit(1)
+
+hooks = cfg.setdefault('hooks', {}) if isinstance(cfg.get('hooks', {}), dict) else {}
+groups = hooks.get(EVENT, [])
+
+def mine(h):
+    return isinstance(h, dict) and h.get('_msesh') == 1
+
+installed = [h for g in groups if isinstance(g, dict)
+               for h in g.get('hooks', []) if mine(h)]
+others = sum(1 for g in groups if isinstance(g, dict)
+               for h in g.get('hooks', []) if not mine(h))
+
+if action in ('status', 'show'):
+    print("settings:  %s" % path)
+    print("%s hooks:  %d total, %d msesh, %d yours"
+          % (EVENT, len(installed) + others, len(installed), others))
+    for h in installed:
+        print("  msesh -> %s" % h.get('command'))
+    if not installed:
+        print("  msesh is not installed — 'msesh hooks install' adds it")
+        print("  it would add: %s" % hook_cmd)
+    sys.exit(0 if installed else 1)
+
+if action in ('install', 'add'):
+    if any(h.get('command') == hook_cmd for h in installed):
+        print("msesh: turn-end hook already installed — nothing to do")
+        sys.exit(0)
+    # A stale msesh entry (an old path, a renamed prefix) is replaced rather
+    # than doubled: two of them would toast twice per turn.
+    for g in groups:
+        if isinstance(g, dict):
+            g['hooks'] = [h for h in g.get('hooks', []) if not mine(h)]
+    groups = [g for g in groups
+              if not (isinstance(g, dict) and not g.get('hooks') and g.get('_msesh') == 1)]
+    groups.append({'_msesh': 1,
+                   'hooks': [{'type': 'command', 'command': hook_cmd, '_msesh': 1}]})
+    hooks[EVENT] = groups
+    cfg['hooks'] = hooks
+    verb = 'would add'
+elif action in ('remove', 'uninstall', 'rm'):
+    if not installed:
+        print("msesh: no msesh hook in %s — nothing to remove" % path)
+        sys.exit(0)
+    for g in groups:
+        if isinstance(g, dict):
+            g['hooks'] = [h for h in g.get('hooks', []) if not mine(h)]
+    # Drop only the empty groups msesh itself created. An empty group belonging
+    # to someone else is theirs to keep.
+    groups = [g for g in groups
+              if not (isinstance(g, dict) and g.get('_msesh') == 1 and not g.get('hooks'))]
+    if groups:
+        hooks[EVENT] = groups
+    else:
+        hooks.pop(EVENT, None)
+    cfg['hooks'] = hooks
+    verb = 'would remove'
+else:
+    print("msesh: no hooks command '%s' (install, status, remove)" % action,
+          file=sys.stderr)
+    sys.exit(1)
+
+if dry:
+    print("msesh: %s the turn-end hook in %s" % (verb, path))
+    print("--- settings.json would become ---")
+    print(json.dumps(cfg, indent=2))
+    sys.exit(0)
+
+if os.path.exists(path):
+    shutil.copy2(path, path + '.msesh-backup')
+tmp = path + '.msesh.tmp'
+os.makedirs(os.path.dirname(path), exist_ok=True)
+with open(tmp, 'w', encoding='utf-8') as fh:
+    json.dump(cfg, fh, indent=2)
+    fh.write('\n')
+# Read it back before it replaces anything: a file this one cannot parse is a
+# file Claude Code cannot parse, and that is the failure worth never shipping.
+with open(tmp, encoding='utf-8') as fh:
+    json.load(fh)
+os.replace(tmp, path)
+print("msesh: %s %s in %s" % (verb.replace('would ', ''),
+                              'the turn-end hook', path))
+if os.path.exists(path + '.msesh-backup'):
+    print("msesh: previous settings kept at %s.msesh-backup" % path)
+PY
+    rc=$?
+    if [ "$HOOKS_SUB" = install ] && [ "$dry" = 0 ] && [ "$rc" = 0 ]; then
+      echo "msesh: agent panes will now report the end of a turn immediately;"
+      echo "msesh: the silence timer stays as the fallback for everything else"
+    fi
+    exit $rc ;;
   doctor)
     # Everything install.sh checks, plus the things that only go wrong later.
     # The installer says all this once, at a moment when it is easy to miss and
