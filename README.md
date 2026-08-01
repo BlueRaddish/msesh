@@ -45,6 +45,13 @@ cd msesh
 ./install.sh                 # copies bin/* into ~/bin
 ```
 
+From PowerShell or cmd — where `./install.sh` is not something you can run — use the shim next to it, which takes the same arguments:
+
+```powershell
+.\install.cmd
+.\install.cmd --check
+```
+
 Options: `--prefix DIR` to install elsewhere, `--link` to symlink instead of copy so `git pull` updates the installed copy (needs Developer Mode on Windows, falls back to copying), `--uninstall` to remove.
 
 Make sure the prefix is on your `PATH` — the installer warns if it is not. On Windows that means the **User `PATH`** in the registry, not a line in `.bashrc`: PowerShell, cmd and the Run box never read your shell rc, and `msesh` will look broken in exactly those places if you only do the latter.

@@ -64,9 +64,59 @@ if [ -z "${MSESH_REEXEC:-}" ] && [ ! -x /usr/bin/tmux ] && [ ! -x /usr/bin/tmux.
     # because /c/... only means the same thing by luck across emulations.
     _self=$(cygpath -m "$0" 2>/dev/null || printf '%s' "$0")
     export MSESH_REEXEC=1 CHERE_INVOKING=1
+
+    # Going straight from here to MSYS2's bash does not work, however obvious
+    # it looks. This shell is Git for Windows' msys runtime and that one is
+    # MSYS2's; two copies of msys-2.0.dll in one process tree fight over the
+    # emulation state they each assume they own, and the symptom is `tmux
+    # new-session` never returning. The build itself completes — panes appear,
+    # msesh prints "ready" — and then the caller waits forever for a process
+    # that is already finished. Redirecting the stdio of either side does not
+    # help; the lineage is the problem, not the handles.
+    #
+    # A native Windows process in between resets that lineage, so the handover
+    # goes through cmd.exe and MSYS2's bash starts with no msys parent.
+    # Arguments travel in a file rather than on cmd.exe's command line, whose
+    # quoting rules would mangle anything containing a space or a quote —
+    # '!npm run dev' being an ordinary msesh argument. Same reasoning as the
+    # notifier passing toast text through the environment.
+    #
+    # Only ever reached from a foreign bash: MSYS2 has its own tmux and never
+    # re-execs, and PowerShell and cmd arrive via msesh.cmd, which already
+    # crosses this boundary by virtue of being a batch file.
+    if command -v cmd.exe >/dev/null 2>&1; then
+      _argv=$(mktemp 2>/dev/null || printf '/tmp/msesh.%s.argv' "$$")
+      : > "$_argv"
+      for _a in ${@+"$@"}; do printf '%s\n' "$_a" >> "$_argv"; done
+      MSESH_ARGV_FILE=$(cygpath -m "$_argv" 2>/dev/null || printf '%s' "$_argv")
+      export MSESH_ARGV_FILE
+      _bash_win=$(cygpath -w "$_root/usr/bin/bash.exe" 2>/dev/null ||
+                  printf '%s' "$_root/usr/bin/bash.exe")
+      # //c, not /c: this shell would otherwise expand a lone /c to a drive.
+      cmd.exe //c "$_bash_win" -l "$_self"
+      _rc=$?
+      rm -f "$_argv"
+      exit $_rc
+    fi
+
+    # No cmd.exe to hide behind — a non-Windows host, or a stripped one. Hand
+    # over directly and hope the runtimes are compatible; on a single-runtime
+    # machine they are, and this is the path that always worked there.
     exec "$_root/usr/bin/bash.exe" -l "$_self" "$@"
   done
   # Nothing found: fall through and let the tmux check below say so plainly.
+fi
+
+# The other end of that handover: arguments come back off disk, before anything
+# has had a chance to look at "$@".
+if [ -n "${MSESH_ARGV_FILE:-}" ]; then
+  if [ -r "$MSESH_ARGV_FILE" ]; then
+    _argv_in=()
+    while IFS= read -r _a || [ -n "$_a" ]; do _argv_in+=("$_a"); done < "$MSESH_ARGV_FILE"
+    set -- ${_argv_in[@]+"${_argv_in[@]}"}
+    unset _argv_in
+  fi
+  unset MSESH_ARGV_FILE
 fi
 
 # Resolved rather than assumed: the notifier is invoked later from inside tmux,

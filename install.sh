@@ -7,6 +7,9 @@
 #
 # Usage: ./install.sh [--prefix DIR] [--link] [--uninstall] [--check]
 #
+# From PowerShell or cmd, run install.cmd next to this file instead — it finds
+# MSYS2's bash and hands the same arguments over to this script.
+#
 #   --prefix DIR  where to install (default: $HOME/bin)
 #   --link        symlink instead of copying, so `git pull` here updates the
 #                 installed copy. Needs Developer Mode or an elevated shell on
@@ -119,7 +122,17 @@ chmod +x "$PREFIX/msesh" "$PREFIX/msesh-notify" 2>/dev/null || true
 
 case ":$PATH:" in
   *":$PREFIX:"*) ;;
-  *) warn "$PREFIX is not on your PATH — add it to use 'msesh' as a bare command." ;;
+  *) warn "$PREFIX is not on your PATH — add it to use 'msesh' as a bare command."
+     # On Windows the usual mistake is to add it to a shell rc, which cmd,
+     # PowerShell and the Run box never read — msesh then works in bash and
+     # looks broken everywhere else. Say where it actually has to go.
+     case $(uname -s 2>/dev/null || echo unknown) in
+       MINGW*|MSYS*|CYGWIN*)
+         warn "    On Windows put it on the *User* PATH, not in .bashrc:"
+         warn "    PowerShell: [Environment]::SetEnvironmentVariable('PATH',"
+         warn "      [Environment]::GetEnvironmentVariable('PATH','User') + ';$(cygpath -w "$PREFIX" 2>/dev/null || echo "$PREFIX")', 'User')"
+         warn "    Then open a new terminal — PATH is read once, at startup." ;;
+     esac ;;
 esac
 
 say "done. Try: msesh help"
