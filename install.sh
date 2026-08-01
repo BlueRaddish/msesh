@@ -135,4 +135,22 @@ case ":$PATH:" in
      esac ;;
 esac
 
+# --- completion ---------------------------------------------------------------
+# Printed, not written. Both files live in the clone and are sourced from
+# there, so a 'git pull' updates completion without a reinstall — the opposite
+# of the binaries, which are copied. Editing someone's .bashrc or $PROFILE
+# behind their back is the kind of thing an installer should ask about, and
+# this one has no way to ask.
+SRC_DIR=$(cd "$(dirname "$0")" && pwd)
+if [ -r "$SRC_DIR/completion/msesh.bash" ]; then
+  case " $(complete -p msesh 2>/dev/null || true) " in
+    *" msesh "*) say "completion: already active in this shell" ;;
+    *) say "completion: add these lines to finish (optional)"
+       say "  bash        source $SRC_DIR/completion/msesh.bash"
+       ps1_win=$(cygpath -w "$SRC_DIR/completion/msesh.ps1" 2>/dev/null ||
+                 echo "$SRC_DIR/completion/msesh.ps1")
+       say "  PowerShell  . $ps1_win     (in \$PROFILE)" ;;
+  esac
+fi
+
 say "done. Try: msesh help"

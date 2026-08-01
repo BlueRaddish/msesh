@@ -688,6 +688,11 @@ case $CMD in
   status)             ACTION=status ;;
   doctor|check)       ACTION=doctor ;;
   send)               ACTION=send ;;
+  # Undocumented on purpose: this is the completion scripts' data source, not
+  # a verb for people. One name per line, no headers, no styling — 'msesh
+  # layout list' is the human version and is free to be rearranged without
+  # breaking Tab in two shells.
+  complete-names)     ACTION=names ;;
   preset|presets)     ACTION=preset ;;
   layout|layouts)     ACTION=layout ;;
   -?*) usage_short >&2
@@ -779,6 +784,8 @@ case $ACTION in
     fi
     take_session_name
     FORGET=$SESSION ;;
+  names)
+    : ;;                                # its positional is read where it is used
   preset)
     PRESET_SUB=${ARGS[0]:-list}
     if [ "${#ARGS[@]}" -gt 1 ]; then PRESET_ARGS=("${ARGS[@]:1}"); fi ;;
@@ -1306,6 +1313,24 @@ case $ACTION in
       else                         printf '  %-16s down\n' "$n"; fi
     done < <(manifest_names)
     [ "$found" = 1 ] || echo "  (none yet)"
+    exit 0 ;;
+  names)
+    # Never fails and never says why: a completion function runs on every Tab,
+    # and an error message printed into the middle of someone's command line
+    # is worse than no completion at all.
+    case ${ARGS[0]:-commands} in
+      commands) printf '%s\n' $COMMANDS ;;
+      presets)  printf '%s\n' ${PRESET_NAMES[@]+"${PRESET_NAMES[@]}"} ;;
+      layouts)  layout_names 2>/dev/null ;;
+      manifests) manifest_names 2>/dev/null ;;
+      sessions) "$TMUX_BIN" list-sessions -F '#S' 2>/dev/null ;;
+      # What 'build' can take: a layout, a preset, or a session to attach to.
+      buildable) { layout_names; printf '%s\n' ${PRESET_NAMES[@]+"${PRESET_NAMES[@]}"}
+                   "$TMUX_BIN" list-sessions -F '#S' 2>/dev/null; } 2>/dev/null | sort -u ;;
+      restorable) { layout_names; manifest_names; } 2>/dev/null | sort -u ;;
+      topics)   printf '%s\n' specs options preset layout agents files env ;;
+      *) : ;;
+    esac
     exit 0 ;;
   send)
     session_exists "$SESSION" || die "no session '$SESSION' (msesh list)"
