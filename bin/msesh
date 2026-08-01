@@ -300,6 +300,7 @@ COMMANDS
   forget NAME       drop a recorded session so it stops being restored
   list              live sessions, layouts and recorded sessions
   status [NAME]     what each pane is doing, and which window is waiting
+  doctor            check this machine: tmux, MSYS2, PATH, files
   preset ...        name a command one pane runs — 'msesh help preset'
   layout ...        name a whole session — 'msesh help layout'
   help [TOPIC]      this page, or a topic below
@@ -630,7 +631,7 @@ help_topic() {
 # — the flag-per-action scheme this replaces — meant the difference between
 # building a session and destroying every session was one shifted keystroke
 # (-k / -K), and nothing on the command line said which you had asked for.
-COMMANDS="build rebuild add attach restore kill forget list status preset layout help version"
+COMMANDS="build rebuild add attach restore kill forget list status preset layout doctor help version"
 
 # Did-you-mean. A prefix match either way round is not enough on its own — it
 # gets 'lst' but not 'buld', and a dropped letter in the middle is the typo
@@ -682,6 +683,7 @@ case $CMD in
   forget)             ACTION=forget ;;
   list)               ACTION=list ;;
   status)             ACTION=status ;;
+  doctor|check)       ACTION=doctor ;;
   preset|presets)     ACTION=preset ;;
   layout|layouts)     ACTION=layout ;;
   -?*) usage_short >&2
@@ -797,7 +799,9 @@ fi
 # tmux only ships with MSYS2 here, so fall back to it when we were launched
 # from a shell that has no tmux on PATH (e.g. Git Bash).
 TMUX_BIN=${TMUX_BIN:-$(command -v tmux || echo /c/msys64/usr/bin/tmux.exe)}
-[ -x "$TMUX_BIN" ] || die "tmux not found ($TMUX_BIN)"
+# 'doctor' exists to report a missing tmux, so it is the one verb that must
+# survive one.
+[ -x "$TMUX_BIN" ] || [ "$ACTION" = doctor ] || die "tmux not found ($TMUX_BIN)"
 
 session_exists() { "$TMUX_BIN" has-session -t "=$1" 2>/dev/null; }
 
@@ -1282,6 +1286,102 @@ case $ACTION in
       else                         printf '  %-16s down\n' "$n"; fi
     done < <(manifest_names)
     [ "$found" = 1 ] || echo "  (none yet)"
+    exit 0 ;;
+  doctor)
+    # Everything install.sh checks, plus the things that only go wrong later.
+    # The installer says all this once, at a moment when it is easy to miss and
+    # impossible to come back to; this is the same information on demand, from
+    # whichever shell is behaving oddly.
+    ok=0; bad=0
+    say() { printf '  %-4s %-22s %s\n' "$1" "$2" "$3"
+            if [ "$1" = ok ]; then ok=$((ok + 1)); else bad=$((bad + 1)); fi; }
+
+    echo "msesh $MSESH_VERSION — $0"
+
+    if [ -x "$TMUX_BIN" ]; then say ok tmux "$("$TMUX_BIN" -V 2>/dev/null || echo "$TMUX_BIN")"
+    else say FAIL tmux "not found ($TMUX_BIN) — pacman -S tmux, inside MSYS2"; fi
+
+    msys_bash=${MSESH_BASH:-${MSYS_BASH:-/c/msys64/usr/bin/bash.exe}}
+    if [ -x "$msys_bash" ]; then say ok MSYS2 "$msys_bash"
+    else say FAIL MSYS2 "no bash at $msys_bash — set MSESH_MSYS_ROOT"; fi
+
+    if command -v "${WT_BIN:-wt.exe}" >/dev/null 2>&1; then
+      say ok "Windows Terminal" "found"
+    else
+      say warn "Windows Terminal" "not found — build works, use --no-tab and attach yourself"
+    fi
+
+    if command -v "$CLAUDE_BIN" >/dev/null 2>&1 || [ -x "$CLAUDE_BIN" ]; then
+      say ok claude "$CLAUDE_BIN"
+    else
+      say warn claude "not on PATH — the claude presets will fail, others are fine"
+    fi
+
+    # The check that earns this command. ~/bin on the User PATH in the registry
+    # is what makes msesh work from PowerShell, cmd, the Run box and VS Code;
+    # a line in .bashrc looks identical from bash and fails everywhere else,
+    # which cost three days once and is invisible from the shell that works.
+    # Checked against the msesh that is *on* PATH, not the one being run: this
+    # file may well be a clone you are testing from, whose directory has no
+    # business being on PATH, and failing that would be noise. If nothing is on
+    # PATH at all, that is the finding.
+    onpath=$(command -v msesh 2>/dev/null || true)
+    if [ -z "$onpath" ]; then
+      say FAIL "PATH" "no msesh on this shell's PATH — run ./install.sh"
+      self_win=
+    else
+      self_win=$(cygpath -w "$(cd "$(dirname "$onpath")" && pwd)" 2>/dev/null ||
+                 printf '%s' "$(dirname "$onpath")")
+    fi
+    if [ -n "$self_win" ]; then
+    # '|| true' matters: with pipefail a missing reg.exe would end the whole
+    # command, and a doctor that dies on its own hardest check is no use.
+    # Spelled out rather than left to PATH: an MSYS2 login shell often drops
+    # the Windows directories, so 'reg.exe' alone is not findable from exactly
+    # the shell msesh does its work in.
+    reg_bin=$(command -v reg.exe 2>/dev/null || true)
+    [ -n "$reg_bin" ] || reg_bin=$(cygpath -u "${SYSTEMROOT:-C:\\Windows}" 2>/dev/null)/System32/reg.exe
+    # //v, not /v: msys rewrites a lone /v into a Windows path before reg.exe
+    # ever sees it, and reg answers "Invalid syntax" — the same trap as the
+    # cmd.exe //c further up.
+    user_path=$( { "$reg_bin" query "HKCU\\Environment" //v Path 2>/dev/null || true; } |
+                 tr -d '\r' | sed -n 's/.*REG_[A-Z_]*Z[[:space:]]*//p')
+    if [ -z "$user_path" ]; then
+      say warn "PATH (registry)" "could not read HKCU\\Environment"
+    elif printf '%s' "$user_path" | grep -qiF "$self_win"; then
+      say ok "PATH (registry)" "$self_win"
+    else
+      say FAIL "PATH (registry)" "$self_win is not on the User PATH — msesh will only work from bash"
+    fi
+    fi
+
+    # The copy-on-install trap: install.sh copies, so an edited repo and an
+    # installed msesh can disagree, and the one on PATH is the one that runs.
+    if [ -n "$onpath" ] && [ "$onpath" != "$0" ]; then
+      # md5sum rather than cmp: a base MSYS2 has coreutils but not diffutils,
+      # so cmp and diff are both liable to be missing on exactly this machine.
+      sum_a=$(md5sum < "$onpath" 2>/dev/null || echo a)
+      sum_b=$(md5sum < "$0" 2>/dev/null || echo b)
+      if [ "$sum_a" = "$sum_b" ]; then say ok "installed copy" "$onpath (same)"
+      else say warn "installed copy" "$onpath differs from $0 — re-run ./install.sh"; fi
+    fi
+
+    for pair in "presets:$PRESET_FILE" "agents:$AGENT_FILE"; do
+      lbl=${pair%%:*}; f=${pair#*:}
+      if [ ! -e "$f" ];   then say ok "$lbl" "none yet ($f)"
+      elif [ -r "$f" ];   then say ok "$lbl" "$f"
+      else                     say FAIL "$lbl" "$f is not readable"; fi
+    done
+
+    for pair in "layouts:$LAYOUT_DIR" "manifests:$MANIFEST_DIR"; do
+      lbl=${pair%%:*}; d=${pair#*:}
+      if mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; then say ok "$lbl" "$d"
+      else say FAIL "$lbl" "$d is not writable"; fi
+    done
+
+    echo
+    if [ "$bad" = 0 ]; then echo "msesh: $ok checks passed"
+    else echo "msesh: $ok passed, $bad want attention"; exit 1; fi
     exit 0 ;;
   status)
     # What the toast and the highlight say, but from outside the session: you
