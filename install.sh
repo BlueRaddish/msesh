@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # install.sh — put msesh on your PATH.
 #
-# Copies the three files in bin/ into a directory of your choosing (default
-# ~/bin) and checks that the things msesh needs are actually there. Re-running
-# is safe; it overwrites.
+# Copies the files in bin/ into a directory of your choosing (default ~/bin) and
+# checks that the things msesh needs are actually there. Re-running is safe; it
+# overwrites.
+#
+# Works on Linux, macOS, Windows (MSYS2) and WSL. What differs between them is
+# answered by bin/msesh-platform, which this script sources rather than
+# duplicating — the installer having its own idea of where tmux lives, or of
+# what to say about PATH, is how the two drift apart.
 #
 # Usage: ./install.sh [--prefix DIR] [--link] [--uninstall] [--check]
 #
@@ -20,6 +25,8 @@
 set -euo pipefail
 
 SELF_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=bin/msesh-platform
+. "$SELF_DIR/bin/msesh-platform"
 PREFIX="$HOME/bin"
 LINK=0
 UNINSTALL=0
@@ -53,20 +60,19 @@ fi
 # you have to fix.
 missing=0
 
-if command -v tmux >/dev/null 2>&1; then
-  say "tmux: $(command -v tmux)"
+say "platform: $(plat_os)"
+
+tmux_bin=$(plat_tmux)
+if [ -x "$tmux_bin" ] || command -v "$tmux_bin" >/dev/null 2>&1; then
+  say "tmux: $tmux_bin"
 else
-  found=
-  for r in /c/msys64 /d/msys64 /c/tools/msys64 "$HOME/scoop/apps/msys2/current"; do
-    [ -x "$r/usr/bin/tmux.exe" ] && { found=$r; break; }
-  done
-  if [ -n "$found" ]; then
-    say "tmux: $found/usr/bin/tmux.exe (not on this shell's PATH — msesh will find it)"
-  else
-    warn "tmux: NOT FOUND. On Windows install MSYS2 (https://www.msys2.org) and"
-    warn "      then 'pacman -S tmux'; elsewhere install tmux from your package manager."
-    missing=1
-  fi
+  warn "tmux: NOT FOUND."
+  case $(plat_os) in
+    windows|wsl) warn "      Install MSYS2 (https://www.msys2.org), then 'pacman -S tmux'." ;;
+    macos)       warn "      brew install tmux" ;;
+    *)           warn "      Install tmux from your package manager." ;;
+  esac
+  missing=1
 fi
 
 if command -v claude >/dev/null 2>&1; then
@@ -76,18 +82,19 @@ else
   warn "        edit your presets file if it lives somewhere unusual."
 fi
 
-case $(uname -s 2>/dev/null || echo unknown) in
-  MINGW*|MSYS*|CYGWIN*)
-    if command -v wt.exe >/dev/null 2>&1 || [ -x "$LOCALAPPDATA/Microsoft/WindowsApps/wt.exe" ]; then
-      say "Windows Terminal: found"
-    else
-      warn "Windows Terminal: not found. msesh builds sessions fine without it,"
-      warn "                  but cannot open a tab — use 'msesh build --no-tab' and attach."
-    fi ;;
-  *)
-    say "non-Windows host: msesh.cmd and the toast notifier are Windows-only;"
-    say "                  the tmux side works, use --no-notify." ;;
-esac
+if opener=$(plat_tab_opener); then
+  say "terminal: $opener"
+else
+  warn "terminal: none found. msesh builds sessions fine without one — it will"
+  warn "          print the attach command instead of opening a window."
+fi
+
+if notifier=$(plat_notifier); then
+  say "notifier: $notifier"
+else
+  warn "notifier: none found. Alerts fall back to a tmux message, which is"
+  warn "          enough on a machine you are looking at."
+fi
 
 [ "$CHECK_ONLY" = 1 ] && exit "$missing"
 [ "$missing" = 1 ] && warn "install: continuing anyway — fix the above before running msesh."
@@ -120,19 +127,13 @@ done
 
 chmod +x "$PREFIX/msesh" "$PREFIX/msesh-notify" 2>/dev/null || true
 
-case ":$PATH:" in
-  *":$PREFIX:"*) ;;
-  *) warn "$PREFIX is not on your PATH — add it to use 'msesh' as a bare command."
-     # On Windows the usual mistake is to add it to a shell rc, which cmd,
-     # PowerShell and the Run box never read — msesh then works in bash and
-     # looks broken everywhere else. Say where it actually has to go.
-     case $(uname -s 2>/dev/null || echo unknown) in
-       MINGW*|MSYS*|CYGWIN*)
-         warn "    On Windows put it on the *User* PATH, not in .bashrc:"
-         warn "    PowerShell: [Environment]::SetEnvironmentVariable('PATH',"
-         warn "      [Environment]::GetEnvironmentVariable('PATH','User') + ';$(cygpath -w "$PREFIX" 2>/dev/null || echo "$PREFIX")', 'User')"
-         warn "    Then open a new terminal — PATH is read once, at startup." ;;
-     esac ;;
+# Where "on PATH" is checked, and what to do about it, are both platform
+# questions: a line in a shell rc is the right answer on Unix and exactly the
+# wrong one on Windows, where PowerShell, cmd and the Run box never read it.
+case $(plat_path_check "$PREFIX") in
+  ok) ;;
+  *)  warn "$PREFIX is not on your PATH — add it to use 'msesh' as a bare command."
+      plat_path_hint "$PREFIX" | sed 's/^/install:     /' >&2 ;;
 esac
 
 # --- completion ---------------------------------------------------------------
@@ -147,9 +148,9 @@ if [ -r "$SRC_DIR/completion/msesh.bash" ]; then
     *" msesh "*) say "completion: already active in this shell" ;;
     *) say "completion: add these lines to finish (optional)"
        say "  bash        source $SRC_DIR/completion/msesh.bash"
-       ps1_win=$(cygpath -w "$SRC_DIR/completion/msesh.ps1" 2>/dev/null ||
-                 echo "$SRC_DIR/completion/msesh.ps1")
-       say "  PowerShell  . $ps1_win     (in \$PROFILE)" ;;
+       if plat_is_windows; then
+         say "  PowerShell  . $(plat_native_path "$SRC_DIR/completion/msesh.ps1")     (in \$PROFILE)"
+       fi ;;
   esac
 fi
 
