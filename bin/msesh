@@ -570,6 +570,20 @@ manifest_of() { printf '%s/%s.conf' "$MANIFEST_DIR" "$1"; }
 manifest_save() {
   local f; f=$(manifest_of "$SESSION")
   mkdir -p "$MANIFEST_DIR" || return 0
+
+  # 'add' describes the panes it is adding, not the session as a whole, so its
+  # specs belong after the ones already recorded. Writing only the new panes —
+  # which is what this did — left the manifest describing the addition alone,
+  # so a restore rebuilt the pane you added and lost every pane it was added
+  # to. Skipped when the specs came out of this same manifest a moment ago,
+  # or they would be written back twice.
+  local prior=() line
+  if [ "$ADD" = 1 ] && [ "$MANIFEST_LOADED" = 0 ] && [ -r "$f" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case ${line%%$'\r'} in spec=*) prior+=("${line#spec=}") ;; esac
+    done < "$f"
+  fi
+
   {
     echo "# msesh manifest for '$SESSION' — rewritten on every build"
     echo "# restore with: msesh restore $SESSION"
@@ -579,6 +593,7 @@ manifest_save() {
     printf 'width=%s\n'   "$PANES_PER_WINDOW"
     printf 'notify=%s\n'  "$NOTIFY_SILENCE"
     local s
+    for s in ${prior[@]+"${prior[@]}"}; do printf 'spec=%s\n' "$s"; done
     for s in ${SPECS[@]+"${SPECS[@]}"}; do printf 'spec=%s\n' "$s"; done
   } > "$f.tmp" && mv "$f.tmp" "$f"
 }
@@ -586,9 +601,12 @@ manifest_save() {
 # Fills in SPECS and the build options, but never overrides a flag the user
 # typed on this invocation — restoring with a tweak should be one flag, not a
 # manifest edit. Returns non-zero when there is nothing to restore.
+MANIFEST_LOADED=0
+
 manifest_load() {
   local f; f=$(manifest_of "$1")
   [ -r "$f" ] || return 1
+  MANIFEST_LOADED=1
   local key val
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%%$'\r'}
