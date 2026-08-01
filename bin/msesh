@@ -136,6 +136,8 @@ EPHEMERAL=0
 OPEN_TAB=1
 PRESEED_TRUST=1
 DRY_RUN=0
+SEND_ENTER=1
+SEND_ALL=0
 ACTION=
 RESTORE=0
 ALL=0
@@ -300,6 +302,7 @@ COMMANDS
   forget NAME       drop a recorded session so it stops being restored
   list              live sessions, layouts and recorded sessions
   status [NAME]     what each pane is doing, and which window is waiting
+  send NAME TEXT    type TEXT into every agent pane of NAME  (--all: every pane)
   doctor            check this machine: tmux, MSYS2, PATH, files
   preset ...        name a command one pane runs — 'msesh help preset'
   layout ...        name a whole session — 'msesh help layout'
@@ -631,7 +634,7 @@ help_topic() {
 # — the flag-per-action scheme this replaces — meant the difference between
 # building a session and destroying every session was one shifted keystroke
 # (-k / -K), and nothing on the command line said which you had asked for.
-COMMANDS="build rebuild add attach restore kill forget list status preset layout doctor help version"
+COMMANDS="build rebuild add attach restore kill forget list status send preset layout doctor help version"
 
 # Did-you-mean. A prefix match either way round is not enough on its own — it
 # gets 'lst' but not 'buld', and a dropped letter in the middle is the typo
@@ -684,6 +687,7 @@ case $CMD in
   list)               ACTION=list ;;
   status)             ACTION=status ;;
   doctor|check)       ACTION=doctor ;;
+  send)               ACTION=send ;;
   preset|presets)     ACTION=preset ;;
   layout|layouts)     ACTION=layout ;;
   -?*) usage_short >&2
@@ -727,6 +731,7 @@ while [ $# -gt 0 ]; do
     --no-tab)     OPEN_TAB=0 ;;
     --no-trust)   PRESEED_TRUST=0 ;;
     --dry-run|-n) DRY_RUN=1 ;;
+    --no-enter)   SEND_ENTER=0 ;;
     --all)        ALL=1 ;;
     -s) SESSION=${1:?-s needs a value}; shift; SESSION_SET=1 ;;
     -d) WORKDIR=${1:?-d needs a value}; shift; DIR_SET=1 ;;
@@ -746,6 +751,7 @@ done
 SPECS=()
 PRESET_ARGS=()
 LAYOUT_ARGS=()
+SEND_TEXT=()
 
 # One name, or none. Every session verb reads its positional the same way, so
 # 'msesh kill work' and 'msesh restore work' cannot drift apart.
@@ -776,6 +782,15 @@ case $ACTION in
   preset)
     PRESET_SUB=${ARGS[0]:-list}
     if [ "${#ARGS[@]}" -gt 1 ]; then PRESET_ARGS=("${ARGS[@]:1}"); fi ;;
+  send)
+    # Session name first and required, never defaulted: this types into every
+    # agent in a session at once, and the one mistake worth designing out is
+    # sending to a session you did not mean.
+    if [ "${#ARGS[@]}" -lt 2 ]; then
+      die "send needs a session and something to type: msesh send work \"/clear\""
+    fi
+    SESSION=${ARGS[0]}; SESSION_SET=1
+    SEND_TEXT=("${ARGS[@]:1}") ;;
   layout)
     LAYOUT_SUB=${ARGS[0]:-list}
     if [ "${#ARGS[@]}" -gt 1 ]; then LAYOUT_ARGS=("${ARGS[@]:1}"); fi ;;
@@ -784,8 +799,13 @@ esac
 # --all turns the single-session verbs into their sweep. Kept as a flag rather
 # than a separate verb so there is one name to remember per action.
 if [ "$ALL" = 1 ]; then
-  if [ "${#ARGS[@]}" != 0 ]; then die "--all takes no session name"; fi
+  # send is the exception: its --all widens which *panes* are typed into, not
+  # which sessions, and it still needs the session named.
+  if [ "$ACTION" = send ]; then
+    SEND_ALL=1
+  elif [ "${#ARGS[@]}" != 0 ]; then die "--all takes no session name"; fi
   case $ACTION in
+    send)  : ;;
     kill)  ACTION=killall ;;
     build) if [ "$RESTORE" != 1 ]; then
              die "--all only means something to 'restore' and 'kill'"
@@ -1286,6 +1306,39 @@ case $ACTION in
       else                         printf '  %-16s down\n' "$n"; fi
     done < <(manifest_names)
     [ "$found" = 1 ] || echo "  (none yet)"
+    exit 0 ;;
+  send)
+    session_exists "$SESSION" || die "no session '$SESSION' (msesh list)"
+    # The arguments are joined rather than sent one per pane: 'msesh send work
+    # /clear' and 'msesh send work "look at src/"' should both mean one line
+    # typed, and quoting a sentence is something people forget.
+    text=${SEND_TEXT[*]}
+    targets=(); skipped=0
+    while IFS='|' read -r pid pagent plabel; do
+      [ -n "$pid" ] || continue
+      if [ "$SEND_ALL" = 1 ] || [ -n "$pagent" ]; then targets+=("$pid|$plabel")
+      else skipped=$((skipped + 1)); fi
+    done < <("$TMUX_BIN" list-panes -s -t "=$SESSION" \
+      -F '#{pane_id}|#{@agent}|#{@label}' 2>/dev/null)
+
+    if [ "${#targets[@]}" = 0 ]; then
+      [ "$skipped" = 0 ] && die "no panes in '$SESSION'"
+      die "no agent panes in '$SESSION' — $skipped pane(s) skipped ('--all' to type into every one)"
+    fi
+
+    for t in "${targets[@]}"; do
+      # -l is literal: without it tmux reads the text as key names, so a
+      # message containing 'Enter' or 'C-c' would be pressed rather than typed.
+      "$TMUX_BIN" send-keys -l -t "${t%%|*}" -- "$text"
+      [ "$SEND_ENTER" = 1 ] && "$TMUX_BIN" send-keys -t "${t%%|*}" Enter
+    done
+    labels=$(printf '%s, ' "${targets[@]#*|}"); labels=${labels%, }
+    if [ "$SEND_ENTER" = 1 ]; then
+      echo "msesh: sent to ${#targets[@]} pane(s) in '$SESSION' — $labels"
+    else
+      echo "msesh: typed into ${#targets[@]} pane(s) in '$SESSION', not submitted — $labels"
+    fi
+    [ "$skipped" != 0 ] && echo "msesh: skipped $skipped non-agent pane(s)"
     exit 0 ;;
   doctor)
     # Everything install.sh checks, plus the things that only go wrong later.
@@ -1951,6 +2004,12 @@ else
     # needing either.
     WIN="$SESSION:$wname"
     "$TMUX_BIN" set-option -p -t "$WIN" @label "$label"
+    # Recorded now because it cannot be worked out later: once a pane is
+    # running, tmux can tell you the wrapper shell but not what msesh put in
+    # it, and 'msesh send' has to know which panes hold an agent.
+    if agent=$(agent_of_cmd "$cmd"); then
+      "$TMUX_BIN" set-option -p -t "$WIN" @agent "$agent"
+    fi
     if [ "$lazy" = 1 ]; then
       "$TMUX_BIN" send-keys -l -t "$WIN" -- "$cmd"
     fi
