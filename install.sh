@@ -79,7 +79,7 @@ case $(uname -s 2>/dev/null || echo unknown) in
       say "Windows Terminal: found"
     else
       warn "Windows Terminal: not found. msesh builds sessions fine without it,"
-      warn "                  but cannot open a tab for you — use msesh -n and attach."
+      warn "                  but cannot open a tab — use 'msesh build --no-tab' and attach."
     fi ;;
   *)
     say "non-Windows host: msesh.cmd and the toast notifier are Windows-only;"
@@ -122,4 +122,4 @@ case ":$PATH:" in
   *) warn "$PREFIX is not on your PATH — add it to use 'msesh' as a bare command." ;;
 esac
 
-say "done. Try: msesh -h"
+say "done. Try: msesh help"

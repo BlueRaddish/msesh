@@ -3,26 +3,31 @@
 # Windows Terminal tab, where each pane runs a preset: a claude session, a
 # shell, or anything you name in the presets file.
 #
-# Three things msesh does that claude-quad did not:
+# What msesh does:
 #
-#   lazy       -X opens claude panes with the command pre-typed but NOT run,
+#   lazy       --lazy opens claude panes with the command pre-typed but NOT run,
 #              so nothing cold-starts until you press Enter in the panes you
-#              actually want. This was the default once; panes now start on
-#              their own and -X is the opt-in.
-#   persistent sessions outlive the tab. Re-running msesh with the same name
-#              attaches to the live session instead of rebuilding it. -F forces
-#              a fresh build, -E ties the session's life to the tab again.
+#              actually want. Panes start on their own otherwise.
+#   persistent sessions outlive the tab. `msesh attach NAME` returns to the live
+#              session instead of rebuilding it. `msesh rebuild` forces a fresh
+#              build, --ephemeral ties the session's life to the tab again.
 #   sized      any pane count, not a fixed 2x2. Panes tile up to 4 per window,
 #              then spill into new tmux windows (prefix+n / prefix+p to switch).
-#   recoverable every build records a manifest, so `msesh -s work` after a crash
-#              or a reboot rebuilds that session exactly as it was. -R restores
-#              every known session at once — point a logon task at it.
+#   recoverable every build records a manifest, so `msesh restore work` after a
+#              crash or a reboot rebuilds that session exactly as it was.
+#              `msesh restore --all` does the lot — point a logon task at it.
 #   noisy      a pane that goes quiet is a pane waiting on you, so msesh pops a
 #              Windows toast when one does. Works for claude and for anything
-#              else in a pane. -N tunes the threshold, --no-notify turns it off.
+#              else in a pane. --notify tunes the threshold, --no-notify is off.
+#
+# The command surface is verb-first: `msesh <command> [options] [specs]`, one
+# verb per thing msesh can do, with the handful of options that genuinely vary
+# per build left as flags. Every verb is dispatched in one place — see the
+# "commands" section below — and `msesh help TOPIC` carries the long-form
+# manual so the default help stays inside a screen.
 #
 # The user-facing manual — usage, every option, examples, file locations — is
-# the usage() function further down, not this comment. `msesh -h` prints it.
+# the help_* functions further down, not this comment. `msesh help` prints it.
 # This header is for whoever is editing the file.
 #
 # A restored session takes its settings from its manifest unless you overrode
@@ -79,9 +84,12 @@ FRESH=0
 EPHEMERAL=0
 OPEN_TAB=1
 PRESEED_TRUST=1
-ACTION=build
+ACTION=
 RESTORE=0
+ALL=0
 FORGET=
+ATTACH_ONLY=0
+PRESET_SUB=
 
 # Set by the option loop when the corresponding flag actually appears on the
 # command line. manifest_load consults these to decide what you overrode: it
@@ -95,191 +103,376 @@ NOTIFY_SET=0
 
 DEFAULT_PRESET=${MSESH_DEFAULT_PRESET:-claude}
 
+MSESH_VERSION=0.2.0
+
 # --- help --------------------------------------------------------------------
 # Written out rather than scraped from the header comment: the comment explains
 # the design to whoever is editing this file, which is not what someone typing
-# -h wants to read. Keep the two in step by hand — there is not enough of either
-# to justify generating one from the other.
+# `msesh help` wants to read. Keep the two in step by hand — there is not enough
+# of either to justify generating one from the other.
+#
+# Split into topics because the single page this used to be had grown past a
+# screen, which is the point at which a manual stops being read at all. The
+# default page lists the commands and the four options anyone actually types;
+# everything else is one `msesh help TOPIC` away and named in that page.
+die() { echo "msesh: $*" >&2; exit 1; }
+
 usage_short() {
   cat <<'EOF'
-usage: msesh [OPTIONS] [SPEC ...]       build or attach to a session
-       msesh -r [NAME] | -R             restore from manifest
-       msesh -k | -K | -f NAME          kill or forget
-       msesh -l | -P | -h               list sessions, list presets, help
+usage: msesh <command> [options] [specs]
+       msesh build 4 claude          msesh list
+       msesh attach work             msesh preset list
+       msesh help                    msesh help specs
 EOF
 }
 
-usage() {
-  # Paths spelled out here rather than read from PRESET_FILE / MANIFEST_DIR:
-  # those are set further down, after the option loop that calls this, so under
-  # `set -u` referencing them would make -h die instead of print.
-  local presets=${MSESH_PRESETS:-$HOME/.config/msesh/presets.conf}
-  local state=${MSESH_STATE:-$HOME/.config/msesh/sessions}
-  usage_short
+help_main() {
   cat <<EOF
-
-Opens a tmux session of N panes in a new Windows Terminal tab, each pane
+msesh — a tmux session of N panes in a new Windows Terminal tab, each pane
 running a preset: a claude session, a shell, or anything you name yourself.
-Sessions outlive the tab; re-running msesh with the same name re-attaches.
 
-SPECS
-  Read left to right. With no SPEC you get one pane of the default preset
-  ($DEFAULT_PRESET).
+usage: msesh <command> [options] [specs]
 
-  N              N panes of the default preset      msesh 4
-  PRESET         one pane of PRESET                 msesh claude
-  N PRESET       N panes of PRESET                  msesh 4 claude
-  PRESET:N       N panes of PRESET                  msesh claude:2 pwsh:1
-  +PRESET        one more pane, + is decoration     msesh 3 claude +pwsh
-  !COMMAND       one pane running COMMAND as-is     msesh 2 claude '!htop'
+COMMANDS
+  build [SPECS]     build a session, or attach to it if it is already up
+  rebuild [SPECS]   kill this session and build it again from scratch
+  add [SPECS]       add panes to a session that is already up
+  attach [NAME]     attach to a session, restoring it first if it is down
+  restore [NAME]    rebuild a session from its manifest  (--all for every one)
+  kill [NAME]       kill a session and everything in it  (--all for every one)
+  forget NAME       drop a session's manifest so it stops being restored
+  list              live sessions and known manifests
+  preset ...        list, show and edit presets — 'msesh help preset'
+  help [TOPIC]      this page, or a topic below
+  version           print the version
 
-OPTIONS
+OPTIONS you will actually type
+  -s, --session NAME   name the session (default: $SESSION)
+  -d, --dir DIR        working directory for every pane (default: \$PWD)
+  -e, --effort LIST    effort for claude panes: 'ladder', or l,m,h,x in order
+  -w, --width N        max panes per window before spilling (default: 4)
+
+  The rest — --lazy, --notify, --no-tab, --ephemeral, --no-trust — are in
+  'msesh help options'.
+
+EXAMPLES
+  msesh build 4                     four claude panes here
+  msesh build 3 claude +pwsh -s work  three claude panes and a shell, 'work'
+  msesh build 3 claude -e ladder    panes at low, medium and high effort
+  msesh attach work                 back to 'work', restoring it if it died
+  msesh restore --all               bring every known session back
+  msesh kill --all                  stop every msesh session
+
+HELP TOPICS
+  msesh help specs      how the pane arguments are read
+  msesh help options    every option, grouped
+  msesh help preset     the preset commands and the presets file
+  msesh help files      where presets and manifests live
+  msesh help env        environment variables msesh honours
+EOF
+}
+
+help_specs() {
+  cat <<EOF
+SPECS — the pane arguments to build, rebuild and add.
+
+Read left to right. With no spec at all you get one pane of the default
+preset ($DEFAULT_PRESET).
+
+  N              N panes of the default preset    msesh build 4
+  PRESET         one pane of PRESET               msesh build claude
+  N PRESET       N panes of PRESET                msesh build 4 claude
+  PRESET:N       N panes of PRESET                msesh build claude:2 pwsh:1
+  +PRESET        one more pane, + is decoration   msesh build 3 claude +pwsh
+  !COMMAND       one pane running COMMAND as-is   msesh build 2 claude '!htop'
+
+Specs and options can interleave, so 'msesh build 4 claude -e ladder' and
+'msesh build -e ladder 4 claude' are the same command.
+
+A spec that collides with a command name needs the verb to disambiguate: a
+preset called 'list' is 'msesh build list'.
+
+See 'msesh help preset' for what a preset is and how to add one.
+EOF
+}
+
+help_options() {
+  cat <<EOF
+OPTIONS — all of them. Only build, rebuild and add use the pane ones.
+
   Session
     -s, --session NAME   session name (default: msesh)
     -d, --dir DIR        working directory for every pane (default: \$PWD)
-    -A, --add            add panes to an existing session, do not attach
-    -F, --fresh          kill an existing session of this name and rebuild
-    -E, --ephemeral      closing the tab kills the session
-    -n, --no-tab         build the session but do not open a terminal tab
+        --ephemeral      closing the tab kills the session, instead of the
+                         session outliving it
+        --no-tab         build the session but do not open a terminal tab;
+                         this is what 'restore --all' uses from a logon task
 
   Panes
     -e, --effort LIST    effort levels for claude panes, comma separated,
                          assigned in pane order; the last repeats for any
                          panes left over. l/m/h/x expand to low/medium/high/
                          xhigh; 'ladder' means low,medium,high
-    -X, --lazy           pre-type claude panes' commands without running them,
+    -w, --width N        max panes per window before spilling (default: 4).
+                         0 puts every pane in one window, however small
+        --lazy           pre-type claude panes' commands without running them,
                          so you press Enter in the ones you actually want
-    -x, --eager          start every pane's command (the default; accepted so
-                         older invocations and logon tasks keep working)
-    -w, --width N        max panes per window before spilling (default: 4)
-    -1, --one-window     put every pane in one window, however small (= -w 0)
 
   Notifications
-    -N, --notify SECS    toast when a pane has produced no output for SECS
+        --notify SECS    toast when a pane has produced no output for SECS
                          (default: 20, 0 = off)
-        --no-notify      same as -N 0
-
-  Sessions on disk
-    -r, --restore [NAME] rebuild NAME from its manifest (implied when you name
-                         a known session that is not running, with no SPECs)
-    -R, --restore-all    restore every known session not running, then exit
-    -k, --kill           kill this session and everything in it, then exit
-    -K, --kill-all       kill every msesh session, then exit
-    -f, --forget NAME    forget NAME's manifest so it stops being restored
-    -l, --list           list live sessions and known manifests, then exit
+        --no-notify      same as --notify 0
 
   Other
-    -P, --presets        list known presets, then exit
-    -T, --no-trust       skip the workspace-trust pre-seed
-    -h, --help           this help
+        --all            restore or kill every known session, not just one
+        --no-trust       skip the workspace-trust pre-seed
 
-EXAMPLES
-  msesh 4                      four claude panes, one window
-  msesh -s work 3 claude +pwsh three claude panes and a shell, named 'work'
-  msesh -e ladder 3 claude     panes at low, medium and high effort
-  msesh -X 4 claude            four claude panes, pre-typed but not started
-  msesh -s work                re-attach to 'work', or restore it if it died
-  msesh -w 0 6 claude          six panes crammed into a single window
-
-FILES
-  $presets
-      presets, as 'name = command' lines. A preset whose command runs claude
-      is treated as a claude pane: --effort is injected and it starts lazy.
-  $state/
-      one manifest per session, written on every build. tmux sessions survive
-      a closed tab but not a reboot, so this is what -r rebuilds from. Run
-      'msesh -R' from a logon task to bring everything back.
-
-NOTES
-  Every pane starts its command as soon as the session is built. Use -X if you
-  would rather claude panes opened with the command pre-typed but unrun, and
-  cold-started only when you press Enter in the ones you want.
-
-  Panes tile up to -w per window, then spill into new tmux windows
-  (prefix+n / prefix+p to switch).
-
-  msesh runs from any shell on this machine. PowerShell, cmd, Windows Terminal
-  and the Run box reach it through msesh.cmd next to this file; other bashes
-  are handed over to MSYS2, which is the only place tmux lives.
-
-ENVIRONMENT
-  CLAUDE_BIN, CLAUDE_FLAGS, CLAUDE_JSON, TMUX_BIN, WT_BIN, WT_PROFILE,
-  MSYS_BASH, MSESH_BASH, MSESH_MSYS_ROOT, MSESH_PRESETS, MSESH_STATE,
-  MSESH_NOTIFIER, MSESH_DEFAULT_PRESET
+A restored session takes its settings from its manifest unless you override
+them on the command line, so 'msesh restore work -w 2' is a one-off tweak and
+'msesh restore work' is the session as it was.
 EOF
 }
-die() { echo "msesh: $*" >&2; exit 1; }
 
-# --- options ----------------------------------------------------------------
-# Hand-rolled rather than getopts so that SPECs and options can interleave, and
-# so --long forms work: `msesh 4 claude --effort ladder` reads better than
-# forcing every flag ahead of the count.
-SPECS=()
+help_preset() {
+  local presets=${MSESH_PRESETS:-$HOME/.config/msesh/presets.conf}
+  cat <<EOF
+PRESETS — the named commands a pane can run.
+
+  msesh preset list           every preset, built-ins first, then yours
+  msesh preset show NAME      the command one preset resolves to
+  msesh preset edit           open the presets file in \$EDITOR
+
+Built in: claude, cly, plan, safe, bash/sh, pwsh/ps, cmd.
+
+Your own live in
+  $presets
+as 'name = command' lines, one per line, and override a built-in of the same
+name. A preset whose command runs claude is treated as a claude pane: it gets
+--effort injected when you pass -e, and it is what --lazy leaves pre-typed
+rather than started. Everything else is run as-is.
+
+  review = claude --remote-control --dangerously-skip-permissions /code-review
+  watch  = npm run dev
+
+For a one-off command you do not want to name, put it in a spec instead:
+  msesh build 2 claude '!npm run dev'
+EOF
+}
+
+help_files() {
+  local presets=${MSESH_PRESETS:-$HOME/.config/msesh/presets.conf}
+  local state=${MSESH_STATE:-$HOME/.config/msesh/sessions}
+  cat <<EOF
+FILES
+
+  $presets
+      presets, as 'name = command' lines. See 'msesh help preset'.
+
+  $state/
+      one manifest per session, rewritten on every build. tmux sessions
+      survive a closed tab but not a reboot, so this is what 'msesh restore'
+      rebuilds from. Point a logon task at 'msesh restore --all --no-tab' to
+      bring your working set back with the machine.
+
+msesh runs from any shell on this machine. PowerShell, cmd, Windows Terminal
+and the Run box reach it through msesh.cmd next to the script; other bashes
+are handed over to MSYS2, which is the only place tmux lives.
+EOF
+}
+
+help_env() {
+  cat <<'EOF'
+ENVIRONMENT — everything machine-specific, so the script itself stays portable.
+
+  CLAUDE_BIN            the claude executable         (default: from PATH)
+  CLAUDE_FLAGS          flags the claude presets run with
+  CLAUDE_JSON           claude's config, for the trust pre-seed
+  MSESH_DEFAULT_PRESET  what a bare 'msesh build 4' launches  (default: claude)
+  MSESH_PRESETS         presets file
+  MSESH_STATE           manifest directory
+  MSESH_NOTIFIER        the toast helper             (default: msesh-notify)
+  MSESH_BASH            an MSYS2 bash.exe outright
+  MSESH_MSYS_ROOT       an MSYS2 install root, if it is somewhere unusual
+  TMUX_BIN              tmux
+  MSYS_BASH             the bash a new terminal tab attaches with
+  WT_BIN, WT_PROFILE    Windows Terminal and the profile a new tab uses
+EOF
+}
+
+help_topic() {
+  case ${1:-} in
+    ''|commands|main)             help_main ;;
+    spec|specs|panes)             help_specs ;;
+    option|options|flags)         help_options ;;
+    preset|presets)               help_preset ;;
+    file|files|manifest|manifests) help_files ;;
+    env|environment|vars)         help_env ;;
+    build|rebuild|add)            help_specs; echo; help_options ;;
+    *) echo "msesh: no help topic '$1'" >&2
+       echo "topics: specs, options, preset, files, env" >&2
+       exit 1 ;;
+  esac
+}
+
+# --- commands ----------------------------------------------------------------
+# One verb, taken from the first argument, decides what msesh is going to do;
+# everything after it is options and positionals for that verb. The alternative
+# — the flag-per-action scheme this replaces — meant the difference between
+# building a session and destroying every session was one shifted keystroke
+# (-k / -K), and nothing on the command line said which you had asked for.
+COMMANDS="build rebuild add attach restore kill forget list preset help version"
+
+# Did-you-mean. A prefix match either way round is not enough on its own — it
+# gets 'lst' but not 'buld', and a dropped letter in the middle is the typo
+# people actually make — so this is a real edit distance, in awk because the
+# same arithmetic in bash would be a visible pause. Eleven candidates, so the
+# cost is irrelevant either way.
+suggest_command() {
+  printf '%s\n' $COMMANDS | awk -v w="$1" '
+    function min3(a, b, c) { return a < b ? (a < c ? a : c) : (b < c ? b : c) }
+    {
+      split("", d)                     # portable clear; dimensions vary per row
+      n = length(w); m = length($0)
+      for (i = 0; i <= n; i++) d[i, 0] = i
+      for (j = 0; j <= m; j++) d[0, j] = j
+      for (i = 1; i <= n; i++)
+        for (j = 1; j <= m; j++)
+          d[i, j] = min3(d[i-1, j] + 1, d[i, j-1] + 1,
+                         d[i-1, j-1] + (substr(w, i, 1) == substr($0, j, 1) ? 0 : 1))
+      dist = d[n, m]
+      if (index($0, w) == 1) dist = 0  # an abbreviation is not a typo
+      if (best == "" || dist < best) { best = dist; pick = $0 }
+    }
+    END { if (best != "" && best <= 2) print pick }'
+}
+
+# A first argument shaped like a spec is someone typing the old flagless form.
+# Say so precisely rather than making them read the whole manual to find out
+# that a verb is now required.
+looks_like_spec() {
+  case $1 in
+    '!'*|'+'*) return 0 ;;
+    *:*)       return 0 ;;
+    ''|*[!0-9]*) return 1 ;;
+    *)         return 0 ;;
+  esac
+}
+
+if [ $# -gt 0 ]; then CMD=$1; shift; else CMD=; fi
+
+case $CMD in
+  ''|help|--help|-h)  help_topic "${1:-}"; exit 0 ;;
+  version|--version)  echo "msesh $MSESH_VERSION"; exit 0 ;;
+  build)              ACTION=build ;;
+  rebuild)            ACTION=build; FRESH=1 ;;
+  add)                ACTION=build; ADD=1 ;;
+  attach)             ACTION=build; ATTACH_ONLY=1 ;;
+  restore)            ACTION=build; RESTORE=1 ;;
+  kill)               ACTION=kill ;;
+  forget)             ACTION=forget ;;
+  list)               ACTION=list ;;
+  preset|presets)     ACTION=preset ;;
+  -?*) usage_short >&2
+       die "a command comes first, then its options — '$CMD' needs one in front of it" ;;
+  *)   usage_short >&2
+       if looks_like_spec "$CMD"; then
+         die "'$CMD' is a spec, not a command — try 'msesh build $CMD'"
+       fi
+       guess=$(suggest_command "$CMD")
+       if [ -n "$guess" ]; then
+         die "no command '$CMD' — did you mean 'msesh $guess'?"
+       fi
+       die "no command '$CMD' (msesh help lists them)" ;;
+esac
+
+# --- options -----------------------------------------------------------------
+# Hand-rolled rather than getopts so that specs and options can interleave, and
+# so --long forms work: `msesh build 4 claude --effort ladder` reads better than
+# forcing every flag ahead of the count. One loop for every verb — what the
+# leftover positionals mean is the verb's business, settled below.
+ARGS=()
 while [ $# -gt 0 ]; do
   arg=$1; shift
   case $arg in
-    --) SPECS+=("$@"); break ;;
+    --) ARGS+=("$@"); break ;;
     --session=*)  SESSION=${arg#*=} ;;
     --dir=*)      WORKDIR=${arg#*=}; DIR_SET=1 ;;
     --effort=*)   EFFORTS_RAW=${arg#*=} ;;
     --width=*)    PANES_PER_WINDOW=${arg#*=}; WIDTH_SET=1 ;;
     --notify=*)   NOTIFY_SILENCE=${arg#*=}; NOTIFY_SET=1 ;;
-    --forget=*)   FORGET=${arg#*=}; ACTION=forget ;;
     --session)    SESSION=${1:?--session needs a value}; shift ;;
     --dir)        WORKDIR=${1:?--dir needs a value}; shift; DIR_SET=1 ;;
     --effort)     EFFORTS_RAW=${1:?--effort needs a value}; shift ;;
     --width)      PANES_PER_WINDOW=${1:?--width needs a value}; shift; WIDTH_SET=1 ;;
     --notify)     NOTIFY_SILENCE=${1:?--notify needs a value}; shift; NOTIFY_SET=1 ;;
-    --forget)     FORGET=${1:?--forget needs a value}; shift; ACTION=forget ;;
     --no-notify)  NOTIFY_SILENCE=0; NOTIFY_SET=1 ;;
-    --restore)    RESTORE=1
-                  # bare -r takes the next word as a name only if it is not
-                  # itself an option or a SPEC we would otherwise parse
-                  case ${1:-} in ''|-*) ;; *) SESSION=$1; shift ;; esac ;;
-    --restore-all) ACTION=restoreall ;;
-    --eager)      EAGER=1; EAGER_SET=1 ;;  # the default now; kept so old
-    --lazy)       EAGER=0; EAGER_SET=1 ;;  # invocations keep working
-    --one-window) PANES_PER_WINDOW=0; WIDTH_SET=1 ;;
-    --add)        ADD=1 ;;
-    --fresh)      FRESH=1 ;;
+    --lazy)       EAGER=0; EAGER_SET=1 ;;
     --ephemeral)  EPHEMERAL=1 ;;
     --no-tab)     OPEN_TAB=0 ;;
-    --kill)       ACTION=kill ;;
-    --kill-all)   ACTION=killall ;;
-    --list)       ACTION=list ;;
-    --presets)    ACTION=presets ;;
     --no-trust)   PRESEED_TRUST=0 ;;
-    # Every spelling anyone reaches for. Without these, `-help` parses as an
-    # unknown option and you get an error where you asked for the manual.
-    help|-help|--help|-\?|/\?) usage; exit 0 ;;
+    --all)        ALL=1 ;;
     -s) SESSION=${1:?-s needs a value}; shift ;;
     -d) WORKDIR=${1:?-d needs a value}; shift; DIR_SET=1 ;;
     -e) EFFORTS_RAW=${1:?-e needs a value}; shift ;;
     -w) PANES_PER_WINDOW=${1:?-w needs a value}; shift; WIDTH_SET=1 ;;
-    -N) NOTIFY_SILENCE=${1:?-N needs a value}; shift; NOTIFY_SET=1 ;;
-    -f) FORGET=${1:?-f needs a value}; shift; ACTION=forget ;;
-    -r) RESTORE=1; case ${1:-} in ''|-*) ;; *) SESSION=$1; shift ;; esac ;;
-    -R) ACTION=restoreall ;;
-    -x) EAGER=1; EAGER_SET=1 ;;
-    -X) EAGER=0; EAGER_SET=1 ;;
-    -1) PANES_PER_WINDOW=0; WIDTH_SET=1 ;;
-    -A) ADD=1 ;;
-    -F) FRESH=1 ;;
-    -E) EPHEMERAL=1 ;;
-    -n) OPEN_TAB=0 ;;
-    -k) ACTION=kill ;;
-    -K) ACTION=killall ;;
-    -l) ACTION=list ;;
-    -P) ACTION=presets ;;
-    -T) PRESEED_TRUST=0 ;;
-    -h) usage; exit 0 ;;
     # The short form, not the whole manual: an error you have to scroll back
-    # through to read is worse than no error. -h is one keystroke away.
-    -?*) usage_short >&2; echo "try 'msesh -h' for the full help" >&2
+    # through to read is worse than no error.
+    -?*) usage_short >&2; echo "try 'msesh help options' for every option" >&2
          die "unknown option: $arg" ;;
-    *)  SPECS+=("$arg") ;;
+    *)  ARGS+=("$arg") ;;
   esac
 done
+
+# --- what the positionals meant ----------------------------------------------
+# Session verbs take a name; build verbs take specs. Both are positional so the
+# common case is one word with no flag around it.
+SPECS=()
+PRESET_ARGS=()
+
+# One name, or none. Every session verb reads its positional the same way, so
+# 'msesh kill work' and 'msesh restore work' cannot drift apart.
+take_session_name() {
+  if [ "${#ARGS[@]}" -gt 1 ]; then
+    die "$CMD takes one session name, got ${#ARGS[@]} arguments"
+  fi
+  if [ "${#ARGS[@]}" = 1 ]; then SESSION=${ARGS[0]}; fi
+  return 0
+}
+
+case $ACTION in
+  build)
+    # attach and restore name a session; build, rebuild and add describe one
+    if [ "$ATTACH_ONLY" = 1 ] || [ "$RESTORE" = 1 ]; then
+      take_session_name
+    else
+      SPECS=(${ARGS[@]+"${ARGS[@]}"})
+    fi ;;
+  kill)
+    take_session_name ;;
+  forget)
+    if [ "${#ARGS[@]}" = 0 ] && [ "$ALL" = 0 ]; then
+      die "forget needs a session name (msesh list shows what is known)"
+    fi
+    take_session_name
+    FORGET=$SESSION ;;
+  preset)
+    PRESET_SUB=${ARGS[0]:-list}
+    if [ "${#ARGS[@]}" -gt 1 ]; then PRESET_ARGS=("${ARGS[@]:1}"); fi ;;
+esac
+
+# --all turns the single-session verbs into their sweep. Kept as a flag rather
+# than a separate verb so there is one name to remember per action.
+if [ "$ALL" = 1 ]; then
+  if [ "${#ARGS[@]}" != 0 ]; then die "--all takes no session name"; fi
+  case $ACTION in
+    kill)  ACTION=killall ;;
+    build) if [ "$RESTORE" != 1 ]; then
+             die "--all only means something to 'restore' and 'kill'"
+           fi
+           ACTION=restoreall ;;
+    *)     die "--all only means something to 'restore' and 'kill'" ;;
+  esac
+fi
 
 # --- locate tmux ------------------------------------------------------------
 # tmux only ships with MSYS2 here, so fall back to it when we were launched
@@ -363,7 +556,7 @@ manifest_save() {
   mkdir -p "$MANIFEST_DIR" || return 0
   {
     echo "# msesh manifest for '$SESSION' — rewritten on every build"
-    echo "# restore with: msesh -r $SESSION"
+    echo "# restore with: msesh restore $SESSION"
     printf 'dir=%s\n'     "$WORKDIR"
     printf 'effort=%s\n'  "$EFFORTS_RAW"
     printf 'eager=%s\n'   "$EAGER"
@@ -416,7 +609,7 @@ case $ACTION in
   list)
     echo "live:"
     list_sessions | sed 's/^/  /'
-    echo "manifests (restore with msesh -r NAME):"
+    echo "manifests (restore with msesh restore NAME):"
     found=0
     while IFS= read -r n; do
       found=1
@@ -437,18 +630,43 @@ case $ACTION in
         echo "msesh: '$n' already up"; any=1; continue
       fi
       echo "msesh: restoring '$n'"
-      # Re-entering the script keeps one code path for building, and -n means
-      # a logon task can bring everything back without stealing focus.
-      "$0" -r "$n" -n && any=1
+      # Re-entering the script keeps one code path for building, and --no-tab
+      # means a logon task can bring everything back without stealing focus.
+      "$0" restore "$n" --no-tab && any=1
     done < <(manifest_names)
     [ "$any" = 1 ] || echo "msesh: nothing to restore"
     exit 0 ;;
-  presets)
-    echo "presets (built-in, then ${PRESET_FILE}):"
-    for i in "${!PRESET_NAMES[@]}"; do
-      printf '  %-10s %s\n' "${PRESET_NAMES[$i]}" "${PRESET_CMDS[$i]}"
-    done
-    [ -r "$PRESET_FILE" ] || echo "  (no user presets file at $PRESET_FILE)"
+  preset)
+    # Sub-verbs rather than more top-level commands: 'list' and 'show' are far
+    # too generic to own a word of their own at the top level, and grouping
+    # them means everything about presets is behind one thing to remember.
+    case $PRESET_SUB in
+      list|ls)
+        echo "presets (built-in, then ${PRESET_FILE}):"
+        for i in "${!PRESET_NAMES[@]}"; do
+          printf '  %-10s %s\n' "${PRESET_NAMES[$i]}" "${PRESET_CMDS[$i]}"
+        done
+        [ -r "$PRESET_FILE" ] || echo "  (no user presets file at $PRESET_FILE)"
+        ;;
+      show|cat)
+        pname=${PRESET_ARGS[0]:-}
+        [ -n "$pname" ] || die "preset show needs a name (msesh preset list)"
+        pcmd=$(preset_get "$pname") || die "no preset '$pname' (msesh preset list)"
+        printf '%s\n' "$pcmd"
+        ;;
+      edit)
+        mkdir -p "$(dirname "$PRESET_FILE")"
+        if [ ! -e "$PRESET_FILE" ]; then
+          printf '# msesh presets — one "name = command" per line.\n' > "$PRESET_FILE"
+        fi
+        ed=${VISUAL:-${EDITOR:-}}
+        if [ -z "$ed" ]; then ed=$(command -v nano || command -v vi || true); fi
+        [ -n "$ed" ] ||
+          die "no \$EDITOR, and no nano or vi — edit $PRESET_FILE yourself"
+        $ed "$PRESET_FILE"
+        ;;
+      *) die "no preset command '$PRESET_SUB' (msesh help preset)" ;;
+    esac
     exit 0 ;;
   kill)
     if session_exists "$SESSION"; then
@@ -460,8 +678,8 @@ case $ACTION in
     exit 0 ;;
   killall)
     # Identified by the @msesh stamp on the session, not by its name — you are
-    # free to call a session whatever you like and -K still finds it, and a
-    # tmux session you set up yourself is never caught in the sweep.
+    # free to call a session whatever you like and 'kill --all' still finds it,
+    # and a tmux session you set up yourself is never caught in the sweep.
     # #S carries no braces for a Windows-side shell to mangle on the way to
     # tmux.exe, and the stamp is then read one session at a time with no format
     # string at all.
@@ -480,20 +698,28 @@ case $ACTION in
 esac
 
 # --- restore ----------------------------------------------------------------
-# -r loads a manifest outright. So does naming a session msesh knows about that
-# is not currently running, when you gave no SPECs of your own: after a reboot,
-# `msesh -s work` should simply bring work back rather than ask you to
-# re-describe it. Options typed on this invocation still win over the manifest.
+# `restore` loads a manifest outright. So does naming a session msesh knows
+# about that is not currently running, when you gave no specs of your own:
+# after a reboot, `msesh build -s work` should simply bring work back rather
+# than ask you to re-describe it. Options typed on this invocation still win
+# over the manifest.
 if [ "$RESTORE" = 1 ]; then
   manifest_load "$SESSION" ||
-    die "no manifest for '$SESSION' (msesh -l shows what is known)"
+    die "no manifest for '$SESSION' (msesh list shows what is known)"
 elif [ "${#SPECS[@]}" -eq 0 ] && ! session_exists "$SESSION"; then
-  manifest_load "$SESSION" && echo "msesh: restoring '$SESSION' from its manifest"
+  # An if rather than `manifest_load && echo`: that list's status is the whole
+  # branch's status, so with `set -e` a session that had no manifest used to
+  # end the script here instead of falling through to build a default pane.
+  if manifest_load "$SESSION"; then
+    echo "msesh: restoring '$SESSION' from its manifest"
+  elif [ "$ATTACH_ONLY" = 1 ]; then
+    die "no session '$SESSION', and no manifest to restore it from (msesh list)"
+  fi
 fi
 
 [ -d "$WORKDIR" ] || die "no such directory: $WORKDIR"
-case $PANES_PER_WINDOW in ''|*[!0-9]*) die "-w needs a number, got '$PANES_PER_WINDOW'" ;; esac
-case $NOTIFY_SILENCE in ''|*[!0-9]*) die "-N needs seconds, got '$NOTIFY_SILENCE'" ;; esac
+case $PANES_PER_WINDOW in ''|*[!0-9]*) die "--width needs a number, got '$PANES_PER_WINDOW'" ;; esac
+case $NOTIFY_SILENCE in ''|*[!0-9]*) die "--notify needs seconds, got '$NOTIFY_SILENCE'" ;; esac
 
 # --- resolve SPECs into a pane list ------------------------------------------
 # Walk left to right holding at most one pending count. A preset name consumes
@@ -508,7 +734,7 @@ add_panes() {
   local name=$1 count=$2 cmd label
   case $name in
     '!'*) cmd=${name#!}; label=${cmd%% *} ;;
-    *)    cmd=$(preset_get "$name") || die "unknown preset '$name' (msesh -P to list)"
+    *)    cmd=$(preset_get "$name") || die "unknown preset '$name' (msesh preset list)"
           label=$name ;;
   esac
   local n=0
@@ -627,7 +853,13 @@ EXISTED=0
 session_exists "$SESSION" && EXISTED=1
 
 if [ "$EXISTED" = 1 ] && [ "$ADD" = 0 ]; then
-  echo "msesh: '$SESSION' is already up — attaching (-A to add panes, -F to rebuild)"
+  # 'attach' asked for exactly this, so it gets no advice; 'build' found a
+  # session where it meant to make one, so it gets told what its options are.
+  if [ "$ATTACH_ONLY" = 1 ]; then
+    echo "msesh: attaching to '$SESSION'"
+  else
+    echo "msesh: '$SESSION' is already up — attaching ('msesh add' for more panes, 'msesh rebuild' to start over)"
+  fi
 else
   [ "$PRESEED_TRUST" = 1 ] && [ "$HAS_CLAUDE" = 1 ] && preseed_trust
 
@@ -644,7 +876,7 @@ else
   per=$PANES_PER_WINDOW
   [ "$per" = 0 ] && per=${#PANE_CMD[@]}
 
-  # -A into a live session: keep going after its existing windows.
+  # 'msesh add' into a live session: keep going after its existing windows.
   winno=1
   if [ "$EXISTED" = 1 ]; then
     winno=$(( $("$TMUX_BIN" list-windows -t "=$SESSION" 2>/dev/null | wc -l) + 1 ))
@@ -741,14 +973,14 @@ else
   w=${#WINDOWS[@]}
   echo "msesh: '$SESSION' — $n pane(s) across $w window(s)"
   [ "$EAGER" = 0 ] && [ "$HAS_CLAUDE" = 1 ] &&
-    echo "msesh: -X, so claude panes are pre-typed, not started — press Enter in the ones you want"
+    echo "msesh: --lazy, so claude panes are pre-typed, not started — press Enter in the ones you want"
 fi
 
 # --- lifetime ---------------------------------------------------------------
-# Persistent by default now: the session outlives the tab so re-running msesh
-# attaches instead of paying for a rebuild. -E restores the old behaviour, and
-# is armed by a hook rather than set outright because a session with no client
-# yet would be torn down the instant it was created.
+# Persistent by default: the session outlives the tab, so `msesh attach` returns
+# to it instead of paying for a rebuild. --ephemeral opts out, and is armed by a
+# hook rather than set outright because a session with no client yet would be
+# torn down the instant it was created.
 if [ "$EPHEMERAL" = 1 ]; then
   # NB: plain session name here, not "=$SESSION" — set-hook rejects that form.
   "$TMUX_BIN" set-hook -t "$SESSION" client-attached \

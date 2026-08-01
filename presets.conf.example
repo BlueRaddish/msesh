@@ -1,13 +1,14 @@
 # msesh presets — copy to ~/.config/msesh/presets.conf and edit.
 #
 # One `name = command` per line. These override the built-ins of the same name,
-# so redefining `claude` here changes what a bare `msesh 4` launches.
+# so redefining `claude` here changes what a bare `msesh build 4` launches.
 #
 # A preset whose command runs claude is detected as a claude pane: it gets
-# --effort injected when you pass -e, and it is what -X leaves pre-typed rather
-# than started. Everything else is run as-is.
+# --effort injected when you pass -e, and it is what --lazy leaves pre-typed
+# rather than started. Everything else is run as-is.
 #
-# `msesh -P` lists what is currently defined, built-ins first.
+# `msesh preset list` shows what is currently defined, built-ins first;
+# `msesh preset edit` opens this file; `msesh help preset` explains the rest.
 
 # --- built-ins, shown here so you can see the shape ---------------------------
 # claude = claude --remote-control --dangerously-skip-permissions
