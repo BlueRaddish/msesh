@@ -240,7 +240,23 @@ PRESETS — the named commands a pane can run.
 
   msesh preset list           every preset, built-ins first, then yours
   msesh preset show NAME      the command one preset resolves to
+  msesh preset make [NAME]    write a new one — asks, if you leave things out
+  msesh preset remove NAME    delete one of yours
   msesh preset edit           open the presets file in \$EDITOR
+
+'preset make' with a name and a quoted command writes it straight out:
+
+  msesh preset make review "claude --remote-control /code-review"
+
+With anything missing it asks instead — how many panes, and what each one
+runs. Answer a pane with a preset name, or with a "quoted command" to run
+that command as-is; naming a preset that does not exist yet offers to write
+that one too, which is how you add 'codex' or 'gemini' the first time.
+
+One pane makes a preset, usable anywhere a preset name is: 'msesh build 4
+review'. More than one makes a layout — a whole named session, launched
+with 'msesh restore NAME' and listed by 'msesh list' alongside the sessions
+msesh recorded for itself.
 
 Built in: claude, cly, plan, safe, bash/sh, pwsh/ps, cmd.
 
@@ -598,6 +614,185 @@ manifest_names() {
   done
 }
 
+# --- writing presets ---------------------------------------------------------
+# Editing presets.conf by hand is fine and stays supported, but it means
+# knowing the file exists, where it is, and what the syntax is before you can
+# name your first command. These write it for you.
+
+# The name becomes a key in presets.conf and, for a layout, a filename. One
+# rule covering both is easier to explain than two.
+preset_name_ok() {
+  case $1 in
+    '') die "a preset needs a name" ;;
+    *[!A-Za-z0-9._-]*)
+      die "preset names take letters, digits, dot, dash and underscore — got '$1'" ;;
+  esac
+  return 0
+}
+
+# Rewrites the whole file rather than appending, so making a preset that
+# already exists updates it in place instead of leaving two lines where the
+# second silently wins.
+preset_file_set() {
+  local name=$1 cmd=$2 tmp replaced=0 line bare n
+  mkdir -p "$(dirname "$PRESET_FILE")"
+  if [ ! -e "$PRESET_FILE" ]; then
+    printf '# msesh presets — one "name = command" per line.\n' > "$PRESET_FILE"
+  fi
+  tmp=$PRESET_FILE.msesh.tmp
+  while IFS= read -r line || [ -n "$line" ]; do
+    bare=${line%%$'\r'}
+    case $bare in
+      *=*)
+        n=${bare%%=*}
+        n=$(printf '%s' "$n" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        if [ "$n" = "$name" ]; then
+          printf '%s = %s\n' "$name" "$cmd"; replaced=1
+        else
+          printf '%s\n' "$bare"
+        fi ;;
+      *) printf '%s\n' "$bare" ;;
+    esac
+  done < "$PRESET_FILE" > "$tmp"
+  [ "$replaced" = 1 ] || printf '%s = %s\n' "$name" "$cmd" >> "$tmp"
+  mv "$tmp" "$PRESET_FILE"
+}
+
+# Non-zero when the name was not in the file, so the caller can tell "removed"
+# from "there was nothing of yours by that name".
+preset_file_unset() {
+  local name=$1 tmp found=0 line bare n
+  [ -r "$PRESET_FILE" ] || return 1
+  tmp=$PRESET_FILE.msesh.tmp
+  while IFS= read -r line || [ -n "$line" ]; do
+    bare=${line%%$'\r'}
+    case $bare in
+      *=*)
+        n=${bare%%=*}
+        n=$(printf '%s' "$n" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        if [ "$n" = "$name" ]; then found=1; else printf '%s\n' "$bare"; fi ;;
+      *) printf '%s\n' "$bare" ;;
+    esac
+  done < "$PRESET_FILE" > "$tmp"
+  if [ "$found" = 1 ]; then mv "$tmp" "$PRESET_FILE"; else rm -f "$tmp"; fi
+  [ "$found" = 1 ]
+}
+
+# A layout is a manifest written on purpose rather than recorded from a build.
+# Same format and same directory, so 'restore', 'list' and 'forget' all work on
+# it the day it is written and there is no second concept to learn.
+layout_save() {
+  local name=$1 dir=$2 effort=$3 width=$4 notify=$5; shift 5
+  local f; f=$(manifest_of "$name")
+  mkdir -p "$MANIFEST_DIR" || die "cannot write to $MANIFEST_DIR"
+  {
+    echo "# msesh layout '$name' — written by 'msesh preset make'"
+    echo "# launch with: msesh restore $name"
+    printf 'dir=%s\n'    "$dir"
+    printf 'effort=%s\n' "$effort"
+    printf 'eager=1\n'
+    printf 'width=%s\n'  "$width"
+    printf 'notify=%s\n' "$notify"
+    local s
+    for s in "$@"; do printf 'spec=%s\n' "$s"; done
+  } > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+# Prompts go to stderr so that a wizard run with its answers piped in still
+# writes only its result to stdout. EOF is an abort, not an empty answer —
+# otherwise a closed stdin walks the whole questionnaire accepting defaults.
+ask() {
+  local prompt=$1 default=$2 __var=$3 reply
+  if [ -n "$default" ]; then printf '%s [%s]: ' "$prompt" "$default" >&2
+  else                       printf '%s: ' "$prompt" >&2; fi
+  if ! IFS= read -r reply; then printf '\n' >&2; die "aborted"; fi
+  [ -n "$reply" ] || reply=$default
+  printf -v "$__var" '%s' "$reply"
+}
+
+preset_make() {
+  local name=${PRESET_ARGS[0]:-} cmd=${PRESET_ARGS[1]:-}
+
+  if [ "${#PRESET_ARGS[@]}" -gt 2 ]; then
+    die "preset make takes a name and one quoted command — try: msesh preset make $name \"claude --effort high\""
+  fi
+
+  # Told everything up front: no questions. This is the form to put in a script.
+  if [ -n "$name" ] && [ -n "$cmd" ]; then
+    preset_name_ok "$name"
+    preset_file_set "$name" "$cmd"
+    echo "msesh: preset '$name' = $cmd"
+    echo "msesh: use it with 'msesh build 4 $name'"
+    return 0
+  fi
+
+  [ -n "$name" ] || ask "Name" "" name
+  preset_name_ok "$name"
+  if preset_get "$name" >/dev/null; then
+    echo "msesh: '$name' already exists — this will replace it" >&2
+  fi
+
+  local panes
+  ask "How many panes" "1" panes
+  case $panes in ''|*[!0-9]*) die "panes must be a number, got '$panes'" ;; esac
+  [ "$panes" -ge 1 ] || die "a preset needs at least one pane"
+
+  local specs=() i=1 choice pcmd
+  while [ "$i" -le "$panes" ]; do
+    ask "  pane $i — a preset name, or a \"literal command\"" "$DEFAULT_PRESET" choice
+    case $choice in
+      # A quoted answer is a command to run as-is, which is what the ! spec
+      # means. Accepting the quotes the user typed rather than making them
+      # learn the ! is the whole point of asking.
+      \"*\"|\'*\')
+        pcmd=${choice:1:${#choice}-2}
+        [ -n "$pcmd" ] || die "empty command for pane $i"
+        specs+=("!$pcmd") ;;
+      '!'*)
+        specs+=("$choice") ;;
+      *)
+        if ! preset_get "$choice" >/dev/null; then
+          echo "    '$choice' is not a preset yet." >&2
+          ask "    command for '$choice' (blank to give up)" "" pcmd
+          [ -n "$pcmd" ] || die "no command for '$choice' — nothing written"
+          preset_name_ok "$choice"
+          preset_file_set "$choice" "$pcmd"
+          preset_set "$choice" "$pcmd"
+          echo "    added preset '$choice' = $pcmd" >&2
+        fi
+        specs+=("$choice") ;;
+    esac
+    i=$((i + 1))
+  done
+
+  # One pane is a name for a command; several is a name for a session. Asking
+  # the pane count first means the answer decides which of the two you get,
+  # and neither needs its own verb.
+  if [ "$panes" = 1 ]; then
+    case ${specs[0]} in
+      '!'*) pcmd=${specs[0]#!} ;;
+      *)    pcmd=$(preset_get "${specs[0]}") ;;
+    esac
+    preset_file_set "$name" "$pcmd"
+    echo "msesh: preset '$name' = $pcmd"
+    echo "msesh: use it with 'msesh build $name' or 'msesh build 4 $name'"
+    return 0
+  fi
+
+  local dir effort width notify
+  ask "Working directory" "$PWD" dir
+  [ -d "$dir" ] || die "no such directory: $dir"
+  ask "Effort for claude panes — blank, 'ladder', or l,m,h" "" effort
+  ask "Max panes per window" "4" width
+  case $width in ''|*[!0-9]*) die "width must be a number, got '$width'" ;; esac
+  ask "Toast after this many seconds of silence (0 = off)" "20" notify
+  case $notify in ''|*[!0-9]*) die "notify must be seconds, got '$notify'" ;; esac
+
+  layout_save "$name" "$dir" "$effort" "$width" "$notify" "${specs[@]}"
+  echo "msesh: layout '$name' — $panes panes in $dir"
+  echo "msesh: launch it with 'msesh restore $name'"
+}
+
 # --- side-effect actions ----------------------------------------------------
 list_sessions() {
   # -F is a format string, but a plain one with no #{} braces for a Windows
@@ -653,6 +848,26 @@ case $ACTION in
         [ -n "$pname" ] || die "preset show needs a name (msesh preset list)"
         pcmd=$(preset_get "$pname") || die "no preset '$pname' (msesh preset list)"
         printf '%s\n' "$pcmd"
+        ;;
+      make|new)
+        preset_make
+        ;;
+      remove|rm|delete)
+        pname=${PRESET_ARGS[0]:-}
+        [ -n "$pname" ] || die "preset remove needs a name (msesh preset list)"
+        if preset_file_unset "$pname"; then
+          echo "msesh: removed preset '$pname'"
+          # A removed override uncovers the built-in underneath it, which is a
+          # surprise unless it is said out loud.
+          case $pname in
+            claude|cly|plan|safe|bash|sh|pwsh|ps|cmd)
+              echo "msesh: '$pname' is a built-in again — see 'msesh preset show $pname'" ;;
+          esac
+        elif preset_get "$pname" >/dev/null; then
+          die "'$pname' is a built-in — it has nothing in $PRESET_FILE to remove"
+        else
+          die "no preset '$pname' (msesh preset list)"
+        fi
         ;;
       edit)
         mkdir -p "$(dirname "$PRESET_FILE")"

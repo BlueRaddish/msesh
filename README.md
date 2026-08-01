@@ -55,7 +55,7 @@ Every command is a word, not a flag. `msesh help` lists them; `msesh help TOPIC`
 | `msesh kill [NAME]` | kill a session and everything in it (`--all` for every one) |
 | `msesh forget NAME` | drop a session's manifest so it stops being restored |
 | `msesh list` | live sessions and known manifests |
-| `msesh preset ...` | `list`, `show NAME`, `edit` |
+| `msesh preset ...` | `list`, `show NAME`, `make [NAME]`, `remove NAME`, `edit` |
 | `msesh help [TOPIC]` | topics: `specs`, `options`, `preset`, `files`, `env` |
 | `msesh version` | |
 
@@ -79,6 +79,37 @@ With no spec you get one pane of the default preset. Specs and options interleav
 Built in: `claude`, `cly`, `plan`, `safe`, `bash`/`sh`, `pwsh`/`ps`, `cmd`. Your own go in `~/.config/msesh/presets.conf` as `name = command` lines and override the built-ins by name — see [`presets.conf.example`](presets.conf.example), or run `msesh preset list` to see what is currently defined.
 
 A preset whose command runs `claude` is treated as a Claude pane: it gets `--effort` injected when you pass `-e`, and it is what `--lazy` leaves pre-typed instead of started.
+
+You do not have to edit the file yourself. `msesh preset make` writes it:
+
+```console
+$ msesh preset make review "claude --remote-control /code-review"
+msesh: preset 'review' = claude --remote-control /code-review
+```
+
+Leave anything out and it asks instead:
+
+```console
+$ msesh preset make
+Name: work
+How many panes [1]: 3
+  pane 1 — a preset name, or a "literal command" [claude]: claude
+  pane 2 — a preset name, or a "literal command" [claude]: codex
+    'codex' is not a preset yet.
+    command for 'codex' (blank to give up): codex --full-auto
+    added preset 'codex' = codex --full-auto
+  pane 3 — a preset name, or a "literal command" [claude]: "npm run dev"
+Working directory [/c/Users/me/thing]:
+Effort for claude panes — blank, 'ladder', or l,m,h: ladder
+Max panes per window [4]:
+Toast after this many seconds of silence (0 = off) [20]:
+msesh: layout 'work' — 3 panes in /c/Users/me/thing
+msesh: launch it with 'msesh restore work'
+```
+
+Answer a pane with a preset name, or with a `"quoted command"` to run that command as-is. Naming a preset that does not exist offers to write that one too — which is how you add `codex`, `gemini` or `aider` the first time.
+
+**One pane makes a preset**, usable anywhere a preset name is (`msesh build 4 review`). **More than one makes a layout** — a whole named session, launched with `msesh restore NAME`, listed by `msesh list`, deleted by `msesh forget NAME`. A layout is stored in the same format msesh uses to record sessions it built itself, so there is nothing extra to learn and no second place to look.
 
 ## Options
 
