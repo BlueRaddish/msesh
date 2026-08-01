@@ -126,6 +126,7 @@ SELF_DIR=$(cd "$(dirname "$0")" && pwd)
 SESSION=msesh
 WORKDIR=$PWD
 EFFORTS_RAW=
+WINDOW_NAMES=
 EAGER=1
 PANES_PER_WINDOW=4
 NOTIFY_SILENCE=20
@@ -152,6 +153,7 @@ DIR_SET=0
 EAGER_SET=0
 WIDTH_SET=0
 NOTIFY_SET=0
+WINDOWS_SET=0
 # Not manifested, but the same idea: a layout names the session it builds
 # unless you said otherwise.
 SESSION_SET=0
@@ -382,6 +384,11 @@ OPTIONS — all of them. Only build, rebuild and add use the pane ones.
                          'msesh help agents'
     -w, --width N        max panes per window before spilling (default: 4).
                          0 puts every pane in one window, however small
+        --windows LIST   name the windows this build creates, comma separated
+                         and in order — 'repo,logs'. Names run out silently:
+                         anything past the end falls back to m1, m2, … A name
+                         appears in the status bar, in the tab title when that
+                         window is waiting, and in its toast
         --lazy           pre-type agent panes' commands without running them,
                          so you press Enter in the ones you actually want
 
@@ -709,6 +716,8 @@ while [ $# -gt 0 ]; do
     --width)      PANES_PER_WINDOW=${1:?--width needs a value}; shift; WIDTH_SET=1 ;;
     --notify)     NOTIFY_SILENCE=${1:?--notify needs a value}; shift; NOTIFY_SET=1 ;;
     --no-notify)  NOTIFY_SILENCE=0; NOTIFY_SET=1 ;;
+    --windows=*)  WINDOW_NAMES=${arg#*=}; WINDOWS_SET=1 ;;
+    --windows)    WINDOW_NAMES=${1:?--windows needs a value}; shift; WINDOWS_SET=1 ;;
     --lazy)       EAGER=0; EAGER_SET=1 ;;
     --ephemeral)  EPHEMERAL=1 ;;
     --no-tab)     OPEN_TAB=0 ;;
@@ -876,6 +885,7 @@ manifest_save() {
     printf 'eager=%s\n'   "$EAGER"
     printf 'width=%s\n'   "$PANES_PER_WINDOW"
     printf 'notify=%s\n'  "$NOTIFY_SILENCE"
+    printf 'windows=%s\n' "$WINDOW_NAMES"
     local s
     for s in ${prior[@]+"${prior[@]}"}; do printf 'spec=%s\n' "$s"; done
     for s in ${SPECS[@]+"${SPECS[@]}"}; do printf 'spec=%s\n' "$s"; done
@@ -904,6 +914,7 @@ conf_read() {
       eager)  [ "$EAGER_SET" = 0 ] && EAGER=$val ;;
       width)  [ "$WIDTH_SET" = 0 ] && PANES_PER_WINDOW=$val ;;
       notify) [ "$NOTIFY_SET" = 0 ] && NOTIFY_SILENCE=$val ;;
+      windows) [ "$WINDOWS_SET" = 0 ] && WINDOW_NAMES=$val ;;
       spec)   SPECS+=("$val") ;;
       layout) ;;                       # marker only; see the layouts section
       # Louder than a silent misreading, quieter than refusing to work: a
@@ -1039,7 +1050,7 @@ preset_file_unset() {
 }
 
 layout_save() {
-  local name=$1 dir=$2 effort=$3 width=$4 notify=$5; shift 5
+  local name=$1 dir=$2 effort=$3 width=$4 notify=$5 windows=$6; shift 6
   local f; f=$(layout_of "$name")
   mkdir -p "$LAYOUT_DIR" || die "cannot write to $LAYOUT_DIR"
   {
@@ -1052,6 +1063,7 @@ layout_save() {
     printf 'eager=1\n'
     printf 'width=%s\n'  "$width"
     printf 'notify=%s\n' "$notify"
+    printf 'windows=%s\n' "$windows"
     local s
     for s in "$@"; do printf 'spec=%s\n' "$s"; done
   } > "$f.tmp" && mv "$f.tmp" "$f"
@@ -1106,7 +1118,7 @@ wizard_panes() {
 }
 
 # The session-level half: everything a layout knows that a preset cannot.
-WIZ_DIR= WIZ_EFFORT= WIZ_WIDTH= WIZ_NOTIFY=
+WIZ_DIR= WIZ_EFFORT= WIZ_WIDTH= WIZ_NOTIFY= WIZ_WINDOWS=
 
 wizard_settings() {
   ask "Working directory" "$PWD" WIZ_DIR
@@ -1114,6 +1126,9 @@ wizard_settings() {
   ask "Effort for agent panes — blank, 'ladder', or l,m,h" "" WIZ_EFFORT
   ask "Max panes per window" "4" WIZ_WIDTH
   case $WIZ_WIDTH in ''|*[!0-9]*) die "width must be a number, got '$WIZ_WIDTH'" ;; esac
+  # Asked after the width, because until that is answered you do not know how
+  # many windows there will be to name.
+  ask "Window names, comma separated (blank for m1, m2, …)" "" WIZ_WINDOWS
   ask "Toast after this many seconds of silence (0 = off)" "20" WIZ_NOTIFY
   case $WIZ_NOTIFY in ''|*[!0-9]*) die "notify must be seconds, got '$WIZ_NOTIFY'" ;; esac
 }
@@ -1163,7 +1178,7 @@ preset_make() {
   fi
 
   wizard_settings
-  layout_save "$name" "$WIZ_DIR" "$WIZ_EFFORT" "$WIZ_WIDTH" "$WIZ_NOTIFY" "${WIZ_SPECS[@]}"
+  layout_save "$name" "$WIZ_DIR" "$WIZ_EFFORT" "$WIZ_WIDTH" "$WIZ_NOTIFY" "$WIZ_WINDOWS" "${WIZ_SPECS[@]}"
   echo "msesh: layout '$name' — $panes panes in $WIZ_DIR"
   echo "msesh: launch it with 'msesh build $name'"
 }
@@ -1202,10 +1217,11 @@ layout_make() {
     WIZ_EFFORT=$EFFORTS_RAW
     WIZ_WIDTH=$PANES_PER_WINDOW
     WIZ_NOTIFY=$NOTIFY_SILENCE
+    WIZ_WINDOWS=$WINDOW_NAMES
     [ -d "$WIZ_DIR" ] || die "no such directory: $WIZ_DIR"
   fi
 
-  layout_save "$name" "$WIZ_DIR" "$WIZ_EFFORT" "$WIZ_WIDTH" "$WIZ_NOTIFY" "${specs[@]}"
+  layout_save "$name" "$WIZ_DIR" "$WIZ_EFFORT" "$WIZ_WIDTH" "$WIZ_NOTIFY" "$WIZ_WINDOWS" "${specs[@]}"
   echo "msesh: layout '$name' — ${specs[*]} in $WIZ_DIR"
   echo "msesh: launch it with 'msesh build $name'"
 }
@@ -1227,7 +1243,7 @@ layout_from_session() {
   SPECS=()
   conf_read "$src" || die "cannot read $src"
   [ "${#SPECS[@]}" -gt 0 ] || die "'$sess' has no panes recorded"
-  layout_save "$name" "$WORKDIR" "$EFFORTS_RAW" "$PANES_PER_WINDOW" "$NOTIFY_SILENCE" \
+  layout_save "$name" "$WORKDIR" "$EFFORTS_RAW" "$PANES_PER_WINDOW" "$NOTIFY_SILENCE" "$WINDOW_NAMES" \
     "${SPECS[@]}"
   echo "msesh: layout '$name' — from the session '$sess'"
   echo "msesh: launch it with 'msesh build $name'"
@@ -1581,6 +1597,33 @@ for c in "${PANE_CMD[@]}"; do
   is_claude_cmd "$c" && HAS_CLAUDE=1
 done
 
+# --- window names -------------------------------------------------------------
+# --windows repo,logs names the windows in order. Split once here rather than
+# in the build loop so a dry run and a real build cannot disagree about it.
+# 'msesh add' starts partway through a session's windows, so the nth window of
+# this invocation is not the nth of the session; names apply to what this
+# command creates, which is the only thing it can honestly name.
+WINDOW_NAME_LIST=()
+if [ -n "$WINDOW_NAMES" ]; then
+  IFS=, read -r -a wraw <<< "$WINDOW_NAMES"
+  for w in ${wraw[@]+"${wraw[@]}"}; do
+    # tmux takes almost anything as a window name, but a colon or a dot is how
+    # every target it accepts is punctuated, so a name containing one becomes
+    # unaddressable.
+    case $w in
+      *[:.]*) die "window names cannot contain ':' or '.' — got '$w'" ;;
+      '')     WINDOW_NAME_LIST+=("") ;;
+      *)      WINDOW_NAME_LIST+=("$w") ;;
+    esac
+  done
+fi
+
+window_name_for() {                     # window_name_for INDEX (0-based)
+  local i=$1
+  [ "$i" -lt "${#WINDOW_NAME_LIST[@]}" ] || return 0
+  printf '%s' "${WINDOW_NAME_LIST[$i]}"
+}
+
 # --- dry run ------------------------------------------------------------------
 # Everything above resolved what this build would be; everything below starts
 # doing it. So this is where a dry run stops — after the specs, presets, agent
@@ -1599,7 +1642,9 @@ if [ "$DRY_RUN" = 1 ]; then
   for i in "${!PANE_CMD[@]}"; do
     if [ $(( i % dper )) = 0 ]; then
       dwin=$((dwin + 1))
-      printf '  window m%s\n' "$dwin"
+      dname=$(window_name_for "$((dwin - 1))")
+      [ -n "$dname" ] || dname="m$dwin"
+      printf '  window %s\n' "$dname"
     fi
     printf '    %-22s %s\n' "${PANE_LABEL[$i]}" "${PANE_CMD[$i]}"
   done
@@ -1716,7 +1761,12 @@ else
 
     slot=$(( i % per ))
     if [ "$slot" = 0 ]; then
-      wname="m$winno"
+      # A window called 'tests' says more than 'm2' everywhere a window name
+      # appears — the status bar, the tab title when it is waiting, and the
+      # toast that tells you which key to press. Names run out silently and
+      # fall back to the counter, so naming the first two of five is fine.
+      wname=$(window_name_for "${#WINDOWS[@]}")
+      [ -n "$wname" ] || wname="m$winno"
       WINDOWS+=("$wname")
       winno=$((winno + 1))
       if [ "$EXISTED" = 1 ] || [ "${#WINDOWS[@]}" -gt 1 ]; then
