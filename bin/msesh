@@ -36,92 +36,44 @@
 # the manifested settings and it needs to set the matching *_SET, or passing it
 # will look like you said nothing and the manifest will win.
 #
-# Shells: msesh runs from anywhere on this machine. PowerShell, cmd, Windows
-# Terminal and the Run box reach it through msesh.cmd, which sits next to this
-# file; Git Bash, Cygwin and any other bash reach it directly and get handed
-# over to MSYS2 below. tmux only ever ships with MSYS2, so that is where the
-# real work always happens, whoever asked for it.
+# Platforms: Linux, macOS, Windows (MSYS2) and WSL. Everything that differs
+# between them — finding tmux, opening a terminal, raising a notification,
+# translating a path — lives in msesh-platform beside this file, and NOTHING
+# in here may name an operating system or a platform binary. test.sh enforces
+# that with a grep. On Windows, PowerShell and cmd reach msesh through
+# msesh.cmd, and any other bash is handed over to MSYS2 by the platform layer,
+# because MSYS2 is the only place tmux exists there.
 #
-# Env overrides: CLAUDE_BIN, CLAUDE_FLAGS, TMUX_BIN, MSYS_BASH, WT_BIN,
-#                WT_PROFILE, CLAUDE_JSON, MSESH_PRESETS, MSESH_DEFAULT_PRESET,
-#                MSESH_STATE, MSESH_NOTIFIER, MSESH_BASH, MSESH_MSYS_ROOT
+# Env overrides: CLAUDE_BIN, CLAUDE_FLAGS, TMUX_BIN, CLAUDE_JSON,
+#                MSESH_PRESETS, MSESH_AGENTS, MSESH_DEFAULT_PRESET,
+#                MSESH_STATE, MSESH_LAYOUTS, MSESH_NOTIFY_CMD, MSESH_TERMINAL,
+#                MSESH_OS, MSESH_MSYS_ROOT, WT_BIN, WT_PROFILE
 
 set -euo pipefail
 
-# --- get into MSYS2 ----------------------------------------------------------
-# tmux lives inside an MSYS2 installation and wants the bash from that same
-# installation driving its ptys; run it from Git Bash and you are crossing two
-# unrelated POSIX emulation layers. So when the bash executing this script has
-# no tmux of its own, find MSYS2 and re-run the whole invocation there rather
-# than half-working. The guard variable stops a wrong-looking MSYS2 from
-# bouncing us round in a loop.
-if [ -z "${MSESH_REEXEC:-}" ] && [ ! -x /usr/bin/tmux ] && [ ! -x /usr/bin/tmux.exe ]; then
-  for _root in ${MSESH_MSYS_ROOT:+"$MSESH_MSYS_ROOT"} /c/msys64 /d/msys64 \
-               /c/tools/msys64 "$HOME/scoop/apps/msys2/current"; do
-    [ -x "$_root/usr/bin/bash.exe" ] && [ -x "$_root/usr/bin/tmux.exe" ] || continue
-    # -l for a full MSYS2 environment, CHERE_INVOKING so its profile leaves us
-    # in the directory the caller was standing in. A Windows-style self path
-    # because /c/... only means the same thing by luck across emulations.
-    _self=$(cygpath -m "$0" 2>/dev/null || printf '%s' "$0")
-    export MSESH_REEXEC=1 CHERE_INVOKING=1
-
-    # Going straight from here to MSYS2's bash does not work, however obvious
-    # it looks. This shell is Git for Windows' msys runtime and that one is
-    # MSYS2's; two copies of msys-2.0.dll in one process tree fight over the
-    # emulation state they each assume they own, and the symptom is `tmux
-    # new-session` never returning. The build itself completes — panes appear,
-    # msesh prints "ready" — and then the caller waits forever for a process
-    # that is already finished. Redirecting the stdio of either side does not
-    # help; the lineage is the problem, not the handles.
-    #
-    # A native Windows process in between resets that lineage, so the handover
-    # goes through cmd.exe and MSYS2's bash starts with no msys parent.
-    # Arguments travel in a file rather than on cmd.exe's command line, whose
-    # quoting rules would mangle anything containing a space or a quote —
-    # '!npm run dev' being an ordinary msesh argument. Same reasoning as the
-    # notifier passing toast text through the environment.
-    #
-    # Only ever reached from a foreign bash: MSYS2 has its own tmux and never
-    # re-execs, and PowerShell and cmd arrive via msesh.cmd, which already
-    # crosses this boundary by virtue of being a batch file.
-    if command -v cmd.exe >/dev/null 2>&1; then
-      _argv=$(mktemp 2>/dev/null || printf '/tmp/msesh.%s.argv' "$$")
-      : > "$_argv"
-      for _a in ${@+"$@"}; do printf '%s\n' "$_a" >> "$_argv"; done
-      MSESH_ARGV_FILE=$(cygpath -m "$_argv" 2>/dev/null || printf '%s' "$_argv")
-      export MSESH_ARGV_FILE
-      _bash_win=$(cygpath -w "$_root/usr/bin/bash.exe" 2>/dev/null ||
-                  printf '%s' "$_root/usr/bin/bash.exe")
-      # //c, not /c: this shell would otherwise expand a lone /c to a drive.
-      cmd.exe //c "$_bash_win" -l "$_self"
-      _rc=$?
-      rm -f "$_argv"
-      exit $_rc
-    fi
-
-    # No cmd.exe to hide behind — a non-Windows host, or a stripped one. Hand
-    # over directly and hope the runtimes are compatible; on a single-runtime
-    # machine they are, and this is the path that always worked there.
-    exec "$_root/usr/bin/bash.exe" -l "$_self" "$@"
-  done
-  # Nothing found: fall through and let the tmux check below say so plainly.
-fi
-
-# The other end of that handover: arguments come back off disk, before anything
-# has had a chance to look at "$@".
-if [ -n "${MSESH_ARGV_FILE:-}" ]; then
-  if [ -r "$MSESH_ARGV_FILE" ]; then
-    _argv_in=()
-    while IFS= read -r _a || [ -n "$_a" ]; do _argv_in+=("$_a"); done < "$MSESH_ARGV_FILE"
-    set -- ${_argv_in[@]+"${_argv_in[@]}"}
-    unset _argv_in
-  fi
-  unset MSESH_ARGV_FILE
-fi
-
-# Resolved rather than assumed: the notifier is invoked later from inside tmux,
-# which is MSYS2-side, so it needs a path both sides agree on.
+# --- the machine we are on ----------------------------------------------------
+# Everything platform-specific lives in msesh-platform, next to this file, and
+# nothing below this point may name an OS or a platform binary — test.sh checks.
+# Resolved before anything else because the bootstrap below may re-exec us.
 SELF_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=msesh-platform
+. "$SELF_DIR/msesh-platform"
+
+# Some machines need a different runtime to reach tmux at all; on the rest this
+# returns immediately. It may not return: on Windows it re-execs into MSYS2.
+plat_bootstrap "$0" ${@+"$@"}
+
+# The far end of that handover, where arguments come back off disk before
+# anything has had a chance to look at "$@". A no-op everywhere else.
+if _argv_in=$(plat_bootstrap_argv); then
+  _argv_arr=()
+  while IFS= read -r _a || [ -n "$_a" ]; do _argv_arr+=("$_a"); done <<EOF
+$_argv_in
+EOF
+  set -- ${_argv_arr[@]+"${_argv_arr[@]}"}
+  unset _argv_arr _argv_in
+fi
+
 
 SESSION=msesh
 WORKDIR=$PWD
@@ -217,7 +169,7 @@ agent_register aider  "" ""
 #
 #   myagent = --reasoning | quick,deep
 #   otheragent =                        (no effort setting)
-AGENT_FILE=${MSESH_AGENTS:-$HOME/.config/msesh/agents.conf}
+AGENT_FILE=${MSESH_AGENTS:-$(plat_config_home)/agents.conf}
 if [ -r "$AGENT_FILE" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%%$'\r'}
@@ -303,7 +255,7 @@ COMMANDS
   list              live sessions, layouts and recorded sessions
   status [NAME]     what each pane is doing, and which window is waiting
   send NAME TEXT    type TEXT into every agent pane of NAME  (--all: every pane)
-  doctor            check this machine: tmux, MSYS2, PATH, files
+  doctor            check this machine: tmux, terminal, notifier, PATH
   preset ...        name a command one pane runs — 'msesh help preset'
   layout ...        name a whole session — 'msesh help layout'
   help [TOPIC]      this page, or a topic below
@@ -429,7 +381,7 @@ EOF
 }
 
 help_preset() {
-  local presets=${MSESH_PRESETS:-$HOME/.config/msesh/presets.conf}
+  local presets=${MSESH_PRESETS:-$(plat_config_home)/presets.conf}
   cat <<EOF
 PRESETS — the named commands a pane can run.
 
@@ -472,7 +424,7 @@ EOF
 }
 
 help_layout() {
-  local dir=${MSESH_LAYOUTS:-$HOME/.config/msesh/layouts}
+  local dir=${MSESH_LAYOUTS:-$(plat_config_home)/layouts}
   cat <<EOF
 LAYOUTS — a name for a whole session, the way a preset is a name for one pane.
 
@@ -515,7 +467,7 @@ EOF
 # Printed from the table itself rather than written out, so a registration
 # added in agents.conf shows up here without anyone remembering to say so.
 help_agents() {
-  local file=${MSESH_AGENTS:-$HOME/.config/msesh/agents.conf} i flag levels
+  local file=${MSESH_AGENTS:-$(plat_config_home)/agents.conf} i flag levels
   cat <<EOF
 AGENTS — the pane commands msesh treats as an interactive assistant rather
 than a shell. Two things follow from being one:
@@ -555,10 +507,10 @@ EOF
 }
 
 help_files() {
-  local presets=${MSESH_PRESETS:-$HOME/.config/msesh/presets.conf}
-  local state=${MSESH_STATE:-$HOME/.config/msesh/sessions}
-  local layouts=${MSESH_LAYOUTS:-$HOME/.config/msesh/layouts}
-  local agents=${MSESH_AGENTS:-$HOME/.config/msesh/agents.conf}
+  local presets=${MSESH_PRESETS:-$(plat_config_home)/presets.conf}
+  local state=${MSESH_STATE:-$(plat_config_home)/sessions}
+  local layouts=${MSESH_LAYOUTS:-$(plat_config_home)/layouts}
+  local agents=${MSESH_AGENTS:-$(plat_config_home)/agents.conf}
   cat <<EOF
 FILES
 
@@ -582,9 +534,9 @@ FILES
   definition, a manifest is a recording. Keeping them apart is what stops a
   build from overwriting the layout it was built from.
 
-msesh runs from any shell on this machine. PowerShell, cmd, Windows Terminal
-and the Run box reach it through msesh.cmd next to the script; other bashes
-are handed over to MSYS2, which is the only place tmux lives.
+msesh runs on Linux, macOS, Windows and WSL, from any shell. On Windows,
+PowerShell and cmd reach it through msesh.cmd next to the script, and other
+bashes are handed over to MSYS2 — the only place tmux exists there.
 EOF
 }
 
@@ -603,11 +555,13 @@ ENVIRONMENT — everything machine-specific, so the script itself stays portable
   MSESH_NOTIFIER        the toast helper             (default: msesh-notify)
   MSESH_HIGHLIGHT       0 to stop marking a waiting window in the tab title,
                         the status bar and the pane borders
-  MSESH_BASH            an MSYS2 bash.exe outright
-  MSESH_MSYS_ROOT       an MSYS2 install root, if it is somewhere unusual
+  MSESH_TERMINAL        the terminal to open a session in, before the search
+  MSESH_NOTIFY_CMD      a command taking TITLE BODY, before the search
+  MSESH_OS              override platform detection (linux/macos/windows/wsl)
   TMUX_BIN              tmux
-  MSYS_BASH             the bash a new terminal tab attaches with
-  WT_BIN, WT_PROFILE    Windows Terminal and the profile a new tab uses
+  TERMINAL              honoured on Linux, as the usual convention
+  MSESH_MSYS_ROOT       Windows: an MSYS2 install root, if it is unusual
+  WT_BIN, WT_PROFILE    Windows: Terminal binary and the profile a tab uses
 EOF
 }
 
@@ -823,9 +777,8 @@ if [ "$ALL" = 1 ]; then
 fi
 
 # --- locate tmux ------------------------------------------------------------
-# tmux only ships with MSYS2 here, so fall back to it when we were launched
-# from a shell that has no tmux on PATH (e.g. Git Bash).
-TMUX_BIN=${TMUX_BIN:-$(command -v tmux || echo /c/msys64/usr/bin/tmux.exe)}
+# Where tmux is depends entirely on the machine, so the platform layer answers.
+TMUX_BIN=$(plat_tmux)
 # 'doctor' exists to report a missing tmux, so it is the one verb that must
 # survive one.
 [ -x "$TMUX_BIN" ] || [ "$ACTION" = doctor ] || die "tmux not found ($TMUX_BIN)"
@@ -863,13 +816,18 @@ preset_set claude "$CLAUDE_BIN $CLAUDE_FLAGS"
 preset_set cly    "$CLAUDE_BIN $CLAUDE_FLAGS"
 preset_set plan   "$CLAUDE_BIN --remote-control --permission-mode plan"
 preset_set safe   "$CLAUDE_BIN --remote-control"
-preset_set bash   "bash -i"
-preset_set sh     "bash -i"
-preset_set pwsh   "powershell.exe -NoLogo"
-preset_set ps     "powershell.exe -NoLogo"
-preset_set cmd    "cmd.exe"
+# Shell presets come from the platform layer, which offers only the shells this
+# machine actually has. A preset list advertising cmd.exe on Linux is lying
+# about the machine, and 'msesh build 2 cmd' failing at the pane is a worse way
+# to find out than it never having been offered.
+while IFS== read -r _pname _pcmd; do
+  [ -n "$_pname" ] && preset_set "$_pname" "$_pcmd"
+done <<EOF
+$(plat_shell_presets)
+EOF
+unset _pname _pcmd
 
-PRESET_FILE=${MSESH_PRESETS:-$HOME/.config/msesh/presets.conf}
+PRESET_FILE=${MSESH_PRESETS:-$(plat_config_home)/presets.conf}
 if [ -r "$PRESET_FILE" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%%$'\r'}                         # tolerate CRLF
@@ -889,7 +847,7 @@ fi
 # not the tmux server dying. Every build therefore records what it was made of,
 # so the session can be rebuilt byte-identically later. Manifests are keyed by
 # session name and rewritten on each build.
-MANIFEST_DIR=${MSESH_STATE:-$HOME/.config/msesh/sessions}
+MANIFEST_DIR=${MSESH_STATE:-$(plat_config_home)/sessions}
 manifest_of() { printf '%s/%s.conf' "$MANIFEST_DIR" "$1"; }
 
 manifest_save() {
@@ -986,7 +944,7 @@ manifest_names() {
 # you wrote down and expect to still say what you wrote. Sharing one directory
 # meant `msesh build quad` recorded over the definition of 'quad' it had just
 # read, `msesh add` edited it, and `msesh forget` deleted it.
-LAYOUT_DIR=${MSESH_LAYOUTS:-$HOME/.config/msesh/layouts}
+LAYOUT_DIR=${MSESH_LAYOUTS:-$(plat_config_home)/layouts}
 layout_of()     { printf '%s/%s.conf' "$LAYOUT_DIR" "$1"; }
 layout_exists() { [ -r "$(layout_of "$1")" ]; }
 layout_load()   { conf_read "$(layout_of "$1")"; }
@@ -1376,17 +1334,27 @@ case $ACTION in
 
     echo "msesh $MSESH_VERSION — $0"
 
-    if [ -x "$TMUX_BIN" ]; then say ok tmux "$("$TMUX_BIN" -V 2>/dev/null || echo "$TMUX_BIN")"
-    else say FAIL tmux "not found ($TMUX_BIN) — pacman -S tmux, inside MSYS2"; fi
+    # What this machine looked like to the platform layer. First, because
+    # every check under it depends on these answers, and because "which
+    # notifier did you pick" is the question a silent toast actually poses.
+    say ok platform "$(plat_os)"
 
-    msys_bash=${MSESH_BASH:-${MSYS_BASH:-/c/msys64/usr/bin/bash.exe}}
-    if [ -x "$msys_bash" ]; then say ok MSYS2 "$msys_bash"
-    else say FAIL MSYS2 "no bash at $msys_bash — set MSESH_MSYS_ROOT"; fi
-
-    if command -v "${WT_BIN:-wt.exe}" >/dev/null 2>&1; then
-      say ok "Windows Terminal" "found"
+    if [ -x "$TMUX_BIN" ]; then
+      say ok tmux "$("$TMUX_BIN" -V 2>/dev/null || echo "$TMUX_BIN")"
     else
-      say warn "Windows Terminal" "not found — build works, use --no-tab and attach yourself"
+      say FAIL tmux "not found ($TMUX_BIN) — install tmux, or set TMUX_BIN"
+    fi
+
+    if opener=$(plat_tab_opener); then
+      say ok terminal "$opener"
+    else
+      say warn terminal "none found — sessions build fine, attach yourself"
+    fi
+
+    if notifier=$(plat_notifier); then
+      say ok notifier "$notifier"
+    else
+      say warn notifier "none found — alerts fall back to a tmux message"
     fi
 
     if command -v "$CLAUDE_BIN" >/dev/null 2>&1 || [ -x "$CLAUDE_BIN" ]; then
@@ -1395,53 +1363,46 @@ case $ACTION in
       say warn claude "not on PATH — the claude presets will fail, others are fine"
     fi
 
-    # The check that earns this command. ~/bin on the User PATH in the registry
-    # is what makes msesh work from PowerShell, cmd, the Run box and VS Code;
-    # a line in .bashrc looks identical from bash and fails everywhere else,
-    # which cost three days once and is invisible from the shell that works.
+    # The check that earns this command. On Windows, ~/bin on the User PATH in
+    # the registry is what makes msesh work from PowerShell, cmd, the Run box
+    # and VS Code; a line in .bashrc looks identical from bash and fails
+    # everywhere else, which cost three days once. On Unix the shell rc *is*
+    # the answer — the advice is inverted between platforms, which is why both
+    # spellings live in the platform layer rather than here.
+    #
     # Checked against the msesh that is *on* PATH, not the one being run: this
     # file may well be a clone you are testing from, whose directory has no
-    # business being on PATH, and failing that would be noise. If nothing is on
-    # PATH at all, that is the finding.
+    # business being on PATH. If nothing is on PATH at all, that is the finding.
     onpath=$(command -v msesh 2>/dev/null || true)
     if [ -z "$onpath" ]; then
-      say FAIL "PATH" "no msesh on this shell's PATH — run ./install.sh"
-      self_win=
+      say FAIL PATH "no msesh on this shell's PATH — run ./install.sh"
     else
-      self_win=$(cygpath -w "$(cd "$(dirname "$onpath")" && pwd)" 2>/dev/null ||
-                 printf '%s' "$(dirname "$onpath")")
-    fi
-    if [ -n "$self_win" ]; then
-    # '|| true' matters: with pipefail a missing reg.exe would end the whole
-    # command, and a doctor that dies on its own hardest check is no use.
-    # Spelled out rather than left to PATH: an MSYS2 login shell often drops
-    # the Windows directories, so 'reg.exe' alone is not findable from exactly
-    # the shell msesh does its work in.
-    reg_bin=$(command -v reg.exe 2>/dev/null || true)
-    [ -n "$reg_bin" ] || reg_bin=$(cygpath -u "${SYSTEMROOT:-C:\\Windows}" 2>/dev/null)/System32/reg.exe
-    # //v, not /v: msys rewrites a lone /v into a Windows path before reg.exe
-    # ever sees it, and reg answers "Invalid syntax" — the same trap as the
-    # cmd.exe //c further up.
-    user_path=$( { "$reg_bin" query "HKCU\\Environment" //v Path 2>/dev/null || true; } |
-                 tr -d '\r' | sed -n 's/.*REG_[A-Z_]*Z[[:space:]]*//p')
-    if [ -z "$user_path" ]; then
-      say warn "PATH (registry)" "could not read HKCU\\Environment"
-    elif printf '%s' "$user_path" | grep -qiF "$self_win"; then
-      say ok "PATH (registry)" "$self_win"
-    else
-      say FAIL "PATH (registry)" "$self_win is not on the User PATH — msesh will only work from bash"
-    fi
+      bindir=$(cd "$(dirname "$onpath")" && pwd)
+      case $(plat_path_check "$bindir") in
+        ok)      say ok PATH "$bindir" ;;
+        unknown) say warn PATH "could not tell whether $bindir is on PATH" ;;
+        *)       say FAIL PATH "$bindir is not on PATH"
+                 plat_path_hint "$bindir" | sed 's/^/       /' ;;
+      esac
     fi
 
-    # The copy-on-install trap: install.sh copies, so an edited repo and an
+    # The copy-on-install trap: install.sh copies, so an edited clone and an
     # installed msesh can disagree, and the one on PATH is the one that runs.
     if [ -n "$onpath" ] && [ "$onpath" != "$0" ]; then
-      # md5sum rather than cmp: a base MSYS2 has coreutils but not diffutils,
-      # so cmp and diff are both liable to be missing on exactly this machine.
-      sum_a=$(md5sum < "$onpath" 2>/dev/null || echo a)
-      sum_b=$(md5sum < "$0" 2>/dev/null || echo b)
-      if [ "$sum_a" = "$sum_b" ]; then say ok "installed copy" "$onpath (same)"
-      else say warn "installed copy" "$onpath differs from $0 — re-run ./install.sh"; fi
+      if [ "$(plat_checksum "$onpath")" = "$(plat_checksum "$0")" ]; then
+        say ok "installed copy" "$onpath (same)"
+      else
+        say warn "installed copy" "$onpath differs from $0 — re-run ./install.sh"
+      fi
+    fi
+
+    # The platform layer has to be installed beside msesh or nothing above
+    # this line would have run — worth stating, since it is a new file that an
+    # older install.sh would not have copied.
+    if [ -r "$SELF_DIR/msesh-platform" ]; then
+      say ok "platform layer" "$SELF_DIR/msesh-platform"
+    else
+      say FAIL "platform layer" "missing beside $0 — re-run ./install.sh"
     fi
 
     for pair in "presets:$PRESET_FILE" "agents:$AGENT_FILE"; do
@@ -1906,14 +1867,16 @@ fi
 CLAUDE_JSON=${CLAUDE_JSON:-$HOME/.claude.json}
 
 preseed_trust() {
-  local py win_dir
+  local py native_dir
   py=$(command -v python3 || command -v python || true)
   if [ -z "$py" ]; then
     echo "msesh: no python found — skipping trust pre-seed" >&2
     return 0
   fi
-  win_dir=$(cygpath -m "$WORKDIR" 2>/dev/null || echo "$WORKDIR")
-  "$py" - "$CLAUDE_JSON" "$win_dir" <<'PY' || echo "msesh: trust pre-seed failed (panes may prompt)" >&2
+  # Claude Code keys its project entries by the platform's native path, which
+  # on Windows is not the same string as the one this shell is holding.
+  native_dir=$(plat_native_path "$WORKDIR")
+  "$py" - "$CLAUDE_JSON" "$native_dir" <<'PY' || echo "msesh: trust pre-seed failed (panes may prompt)" >&2
 import json, os, posixpath, sys
 
 cfg_path, target = sys.argv[1], sys.argv[2].rstrip('/')
@@ -2019,7 +1982,8 @@ else
       fi
       EXISTED=1                     # from here on the session is definitely up
     else
-      wname=${WINDOWS[-1]}
+      # Not ${WINDOWS[-1]}: negative subscripts need bash 4.2, macOS ships 3.2.
+      wname=${WINDOWS[$(( ${#WINDOWS[@]} - 1 ))]}
       "$TMUX_BIN" split-window -t "$SESSION:$wname" -c "$WORKDIR" "$launch"
     fi
 
@@ -2176,25 +2140,24 @@ if [ -n "${TMUX:-}" ]; then
   exec "$TMUX_BIN" switch-client -t "$SESSION"
 fi
 
-# --- open a new Windows Terminal tab attached to it -------------------------
-# -w 0 targets the most recently used window; 'nt' = new tab. -p picks the MSYS2
-# profile for its settings only — the commandline below still overrides its
-# shell, so this is the one place MSYS2 gets used.
-MSYS_BASH=${MSYS_BASH:-C:/msys64/usr/bin/bash.exe}
-WT_BIN=${WT_BIN:-wt.exe}
-WT_PROFILE=${WT_PROFILE:-MSYS2 UCRT64}
-WT_START=$(cygpath -w "$WORKDIR" 2>/dev/null || echo "$WORKDIR")
+# --- open a terminal attached to it -----------------------------------------
+# Which terminal, and how it is asked, is the platform layer's business. What
+# is msesh's business is the command that terminal should run, and what to do
+# when the machine has no terminal to open — which is a normal state, not a
+# failure: a headless server, an ssh session, a stripped container.
+ATTACH_CMD="tmux attach -t $SESSION || exec \"\$SHELL\" -l"
 
-# --title would pin the tab's name for good: Windows Terminal treats it as an
-# override and stops listening to the escape sequence tmux uses to set titles.
-# That is a fine trade for a static label and a bad one once the title is
-# carrying "which window is waiting on you", so the title is left to tmux —
-# whose set-titles-string was set above — and only pinned when that whole
-# mechanism has been turned off.
-WT_TITLE=()
+# A title is passed only when the alert mechanism is off. Windows Terminal, at
+# least, treats an explicit title as an override and stops honouring the escape
+# sequence tmux sets titles with — fine for a static label, useless once the
+# title is carrying "which window is waiting on you".
+TAB_TITLE=
 if [ "${MSESH_HIGHLIGHT:-1}" = 0 ] || [ "$NOTIFY_SILENCE" = 0 ]; then
-  WT_TITLE=(--title "msesh: $SESSION")
+  TAB_TITLE="msesh: $SESSION"
 fi
 
-"$WT_BIN" -w 0 nt -p "$WT_PROFILE" -d "$WT_START" ${WT_TITLE[@]+"${WT_TITLE[@]}"} \
-  "$MSYS_BASH" -l -c "tmux attach -t $SESSION || exec bash -l"
+if ! plat_open_tab "$SESSION" "$WORKDIR" "$ATTACH_CMD" "$TAB_TITLE"; then
+  echo "msesh: '$SESSION' is up, but no terminal on this machine could be opened"
+  echo "msesh: attach with:  tmux attach -t $SESSION"
+  echo "msesh: (set MSESH_TERMINAL, or use --no-tab to stop trying)"
+fi

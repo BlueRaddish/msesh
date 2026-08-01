@@ -24,7 +24,7 @@ PREFIX="$HOME/bin"
 LINK=0
 UNINSTALL=0
 CHECK_ONLY=0
-FILES="msesh msesh.cmd msesh-notify"
+FILES="msesh msesh.cmd msesh-notify msesh-platform"
 
 while [ $# -gt 0 ]; do
   case $1 in

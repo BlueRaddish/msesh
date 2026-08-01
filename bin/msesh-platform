@@ -1,0 +1,405 @@
+# msesh-platform — everything msesh knows about the machine it is running on.
+#
+# Sourced by `msesh` and `msesh-notify`. Not executable on its own.
+#
+# THE RULE: this is the only file allowed to name an operating system or a
+# platform-specific binary. `msesh` and `msesh-notify` must not mention cygpath,
+# wt.exe, powershell, msys, reg.exe or a /c/ path anywhere. test.sh enforces
+# that with a grep, so a leak is a failing build rather than something someone
+# discovers a year later on a laptop we have never seen.
+#
+# WHY PROBING, NOT BRANCHING: the obvious design is `case $(uname -s)`. It is
+# the wrong primary mechanism, because the OS does not tell you what is
+# installed. "Linux" is a box with notify-send and a box without; with a
+# graphical session and one over ssh; with gnome-terminal, or kitty, or nothing
+# at all. So the OS is used only to *order* a list of candidates, and the first
+# candidate that actually exists wins.
+#
+# WHY EVERY CAPABILITY HAS A FLOOR: nothing here may hard-fail. A machine with
+# no notifier and no terminal emulator is a normal machine — a headless server —
+# and it should get a working msesh that says what it could not do, not an
+# error. The floor for opening a tab is "build the session and print the attach
+# command", which is what --no-tab has always done, so the fallback path is code
+# that already exists and is already tested.
+#
+# BASH 3.2 IS THE FLOOR. macOS ships bash 3.2 (2007) and Apple will not move.
+# No mapfile/readarray, no negative array subscripts, no associative arrays, no
+# ${var,,}. CI runs the suite under /bin/bash on macOS to keep it that way.
+
+# --- which machine is this ----------------------------------------------------
+# MSESH_OS is advisory: it orders candidate lists and gates the two things that
+# genuinely are Windows-only (the runtime handover and path translation).
+# Overridable so the branches you are not sitting on can still be exercised.
+plat_os() {
+  if [ -n "${MSESH_OS:-}" ]; then printf '%s' "$MSESH_OS"; return 0; fi
+  local sys
+  sys=$(uname -s 2>/dev/null || echo unknown)
+  case $sys in
+    Linux)
+      # WSL is Linux, but its notifications and terminals live on the Windows
+      # side, so it cannot be treated as plain Linux.
+      if grep -qi microsoft /proc/version 2>/dev/null; then
+        MSESH_OS=wsl
+      else
+        MSESH_OS=linux
+      fi ;;
+    Darwin)                   MSESH_OS=macos ;;
+    MINGW*|MSYS*|CYGWIN*)     MSESH_OS=windows ;;
+    *)                        MSESH_OS=unknown ;;
+  esac
+  export MSESH_OS
+  printf '%s' "$MSESH_OS"
+}
+
+plat_is_windows() { case $(plat_os) in windows|wsl) return 0 ;; esac; return 1; }
+
+# --- tmux ---------------------------------------------------------------------
+# On Unix this is one line, because tmux is a normal package there. The whole
+# MSYS2 search exists because Windows has no native tmux at all.
+plat_tmux() {
+  if [ -n "${TMUX_BIN:-}" ]; then printf '%s' "$TMUX_BIN"; return 0; fi
+  local found
+  found=$(command -v tmux 2>/dev/null || true)
+  if [ -n "$found" ]; then printf '%s' "$found"; return 0; fi
+  if plat_is_windows; then
+    local root
+    for root in ${MSESH_MSYS_ROOT:+"$MSESH_MSYS_ROOT"} /c/msys64 /d/msys64 \
+                /c/tools/msys64 "$HOME/scoop/apps/msys2/current"; do
+      [ -x "$root/usr/bin/tmux.exe" ] || continue
+      printf '%s' "$root/usr/bin/tmux.exe"; return 0
+    done
+  fi
+  # Nothing found. Printing the bare name lets the caller's own -x check
+  # produce the error, in one place, with the path it looked for.
+  printf 'tmux'
+}
+
+# --- getting into a runtime that has tmux -------------------------------------
+# Unix returns immediately: there is only one runtime and it already has tmux.
+#
+# On Windows there are two POSIX emulations in play — Git for Windows' msys and
+# MSYS2's — and only MSYS2 ships tmux. Crossing between them is not optional and
+# not simple, so the whole of that reasoning lives here.
+plat_bootstrap() {
+  local self=$1; shift
+  [ -z "${MSESH_REEXEC:-}" ] || return 0
+  [ ! -x /usr/bin/tmux ] && [ ! -x /usr/bin/tmux.exe ] || return 0
+  plat_is_windows || return 0
+
+  local root
+  for root in ${MSESH_MSYS_ROOT:+"$MSESH_MSYS_ROOT"} /c/msys64 /d/msys64 \
+              /c/tools/msys64 "$HOME/scoop/apps/msys2/current"; do
+    [ -x "$root/usr/bin/bash.exe" ] && [ -x "$root/usr/bin/tmux.exe" ] || continue
+
+    # -l for a full MSYS2 environment, CHERE_INVOKING so its profile leaves us
+    # in the directory the caller was standing in. A Windows-style self path
+    # because /c/... only means the same thing by luck across emulations.
+    local selfwin
+    selfwin=$(cygpath -m "$self" 2>/dev/null || printf '%s' "$self")
+    export MSESH_REEXEC=1 CHERE_INVOKING=1
+
+    # Going straight from here to MSYS2's bash does not work, however obvious
+    # it looks. This shell is Git for Windows' msys runtime and that one is
+    # MSYS2's; two copies of msys-2.0.dll in one process tree fight over the
+    # emulation state they each assume they own, and the symptom is `tmux
+    # new-session` never returning. The build itself completes — panes appear,
+    # msesh prints "ready" — and then the caller waits forever for a process
+    # that is already finished. Redirecting the stdio of either side does not
+    # help; the lineage is the problem, not the handles.
+    #
+    # A native Windows process in between resets that lineage, so the handover
+    # goes through cmd.exe and MSYS2's bash starts with no msys parent.
+    # Arguments travel in a file rather than on cmd.exe's command line, whose
+    # quoting rules would mangle anything containing a space or a quote —
+    # '!npm run dev' being an ordinary msesh argument. Same reasoning as the
+    # notifier passing toast text through the environment.
+    if command -v cmd.exe >/dev/null 2>&1; then
+      local argv a rc bashwin
+      argv=$(mktemp 2>/dev/null || printf '/tmp/msesh.%s.argv' "$$")
+      : > "$argv"
+      for a in ${@+"$@"}; do printf '%s\n' "$a" >> "$argv"; done
+      MSESH_ARGV_FILE=$(cygpath -m "$argv" 2>/dev/null || printf '%s' "$argv")
+      export MSESH_ARGV_FILE
+      bashwin=$(cygpath -w "$root/usr/bin/bash.exe" 2>/dev/null ||
+                printf '%s' "$root/usr/bin/bash.exe")
+      # //c, not /c: this shell would otherwise expand a lone /c to a drive.
+      cmd.exe //c "$bashwin" -l "$selfwin"
+      rc=$?
+      rm -f "$argv"
+      exit $rc
+    fi
+
+    # No cmd.exe to hide behind — a stripped Windows, or an emulation that
+    # does not expose it. Hand over directly and hope the runtimes agree; on a
+    # single-runtime machine they do, and this is the path that always worked
+    # there.
+    exec "$root/usr/bin/bash.exe" -l "$self" "$@"
+  done
+  return 0                      # nothing found: the caller's tmux check speaks
+}
+
+# The other end of that handover: arguments come back off disk. Prints them one
+# per line for the caller to read into "$@", and is a no-op everywhere else.
+plat_bootstrap_argv() {
+  [ -n "${MSESH_ARGV_FILE:-}" ] || return 1
+  [ -r "$MSESH_ARGV_FILE" ] || { unset MSESH_ARGV_FILE; return 1; }
+  cat "$MSESH_ARGV_FILE"
+  unset MSESH_ARGV_FILE
+  return 0
+}
+
+# --- opening a terminal on a session ------------------------------------------
+# Candidates in order of "what this OS most likely has", each probed. Returns
+# non-zero when nothing could open a window, which is the caller's cue to fall
+# back to telling the user how to attach — a real outcome on a headless box,
+# not an error.
+#
+# WT_BIN / MSESH_TERMINAL override the search entirely.
+plat_open_tab() {
+  local session=$1 workdir=$2 attach_cmd=$3 title=$4
+  local term=${MSESH_TERMINAL:-}
+
+  case $(plat_os) in
+    windows|wsl)
+      local wt=${WT_BIN:-wt.exe}
+      if command -v "$wt" >/dev/null 2>&1; then
+        local profile=${WT_PROFILE:-MSYS2 UCRT64}
+        local start shellbin
+        start=$(cygpath -w "$workdir" 2>/dev/null || printf '%s' "$workdir")
+        shellbin=${MSYS_BASH:-C:/msys64/usr/bin/bash.exe}
+        # --title is deliberately not passed: Windows Terminal treats it as an
+        # override and stops honouring the escape sequence tmux sets titles
+        # with. Fine for a static label, useless once the title is carrying
+        # "which window is waiting on you". The caller passes a title only
+        # when that mechanism is off.
+        if [ -n "$title" ]; then
+          "$wt" -w 0 nt -p "$profile" -d "$start" --title "$title" \
+            "$shellbin" -l -c "$attach_cmd" && return 0
+        else
+          "$wt" -w 0 nt -p "$profile" -d "$start" \
+            "$shellbin" -l -c "$attach_cmd" && return 0
+        fi
+      fi ;;
+    macos)
+      # `open -a` returns as soon as the app is told, which is what we want:
+      # msesh should not block on the terminal being closed.
+      local app
+      for app in ${term:+"$term"} iTerm Terminal; do
+        if open -a "$app" --args -e "$attach_cmd" >/dev/null 2>&1; then return 0; fi
+        # Terminal.app ignores --args; osascript is the reliable spelling.
+        if [ "$app" = Terminal ] && command -v osascript >/dev/null 2>&1; then
+          osascript -e "tell application \"Terminal\" to do script \"$attach_cmd\"" \
+            >/dev/null 2>&1 && return 0
+        fi
+      done ;;
+    *)
+      local t
+      for t in ${term:+"$term"} ${TERMINAL:+"$TERMINAL"} \
+               kitty alacritty wezterm foot gnome-terminal konsole \
+               xfce4-terminal tilix urxvt xterm; do
+        command -v "$t" >/dev/null 2>&1 || continue
+        case $t in
+          gnome-terminal) "$t" --working-directory="$workdir" -- \
+                            sh -c "$attach_cmd" >/dev/null 2>&1 & return 0 ;;
+          konsole)        "$t" --workdir "$workdir" -e \
+                            sh -c "$attach_cmd" >/dev/null 2>&1 & return 0 ;;
+          xfce4-terminal|tilix)
+                          "$t" --working-directory="$workdir" -e \
+                            "sh -c '$attach_cmd'" >/dev/null 2>&1 & return 0 ;;
+          wezterm)        "$t" start --cwd "$workdir" -- \
+                            sh -c "$attach_cmd" >/dev/null 2>&1 & return 0 ;;
+          kitty)          "$t" --directory "$workdir" \
+                            sh -c "$attach_cmd" >/dev/null 2>&1 & return 0 ;;
+          *)              "$t" -e sh -c "$attach_cmd" >/dev/null 2>&1 & return 0 ;;
+        esac
+      done ;;
+  esac
+  return 1
+}
+
+# Which opener plat_open_tab would use, without using it. For doctor.
+plat_tab_opener() {
+  case $(plat_os) in
+    windows|wsl)
+      command -v "${WT_BIN:-wt.exe}" >/dev/null 2>&1 &&
+        { printf 'Windows Terminal'; return 0; } ;;
+    macos)
+      command -v open >/dev/null 2>&1 && { printf 'open -a'; return 0; } ;;
+    *)
+      local t
+      for t in ${MSESH_TERMINAL:+"$MSESH_TERMINAL"} ${TERMINAL:+"$TERMINAL"} \
+               kitty alacritty wezterm foot gnome-terminal konsole \
+               xfce4-terminal tilix urxvt xterm; do
+        command -v "$t" >/dev/null 2>&1 && { printf '%s' "$t"; return 0; }
+      done ;;
+  esac
+  return 1
+}
+
+# --- desktop notification -----------------------------------------------------
+# Same shape: probe, first hit wins, and a floor that always works because it is
+# tmux itself. MSESH_NOTIFY_CMD overrides with a command taking TITLE BODY.
+plat_notify() {
+  local title=$1 body=$2
+
+  if [ -n "${MSESH_NOTIFY_CMD:-}" ]; then
+    $MSESH_NOTIFY_CMD "$title" "$body" >/dev/null 2>&1 && return 0
+  fi
+
+  case $(plat_os) in
+    linux)
+      command -v notify-send >/dev/null 2>&1 &&
+        { notify-send -- "$title" "$body" >/dev/null 2>&1 && return 0; } ;;
+    macos)
+      command -v terminal-notifier >/dev/null 2>&1 &&
+        { terminal-notifier -title "$title" -message "$body" \
+            >/dev/null 2>&1 && return 0; }
+      command -v osascript >/dev/null 2>&1 && {
+        # Quotes in either field would end the AppleScript string early.
+        local t=${title//\"/\'} b=${body//\"/\'}
+        osascript -e "display notification \"$b\" with title \"$t\"" \
+          >/dev/null 2>&1 && return 0; } ;;
+    windows|wsl)
+      plat_notify_windows "$title" "$body" && return 0 ;;
+  esac
+
+  # Floor: no desktop notifier on this machine. tmux is guaranteed present —
+  # msesh cannot run without it — so the message still reaches a human.
+  "$(plat_tmux)" display-message -d 4000 "msesh: $title — $body" 2>/dev/null
+  return 0
+}
+
+# Windows toast, kept in its own function because it is 25 lines of PowerShell.
+# Text crosses through the environment rather than the command line so quotes
+# and spaces in a session name cannot break the script or be read as syntax.
+plat_notify_windows() {
+  local ps=${PS_BIN:-powershell.exe}
+  command -v "$ps" >/dev/null 2>&1 || return 1
+  MSESH_TITLE=$1 MSESH_BODY=$2 "$ps" -NoLogo -NoProfile -NonInteractive -Command '
+$t = [Security.SecurityElement]::Escape($env:MSESH_TITLE)
+$b = [Security.SecurityElement]::Escape($env:MSESH_BODY)
+try {
+  [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime]
+  [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom, ContentType=WindowsRuntime]
+  $xml = "<toast><visual><binding template=""ToastGeneric""><text>$t</text><text>$b</text></binding></visual></toast>"
+  $doc = New-Object Windows.Data.Xml.Dom.XmlDocument
+  $doc.LoadXml($xml)
+  $toast = New-Object Windows.UI.Notifications.ToastNotification $doc
+  $aumid = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
+  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($aumid).Show($toast)
+} catch {
+  # WinRT toasts are unavailable in some session types (services, older
+  # builds); a tray balloon still gets the message across.
+  Add-Type -AssemblyName System.Windows.Forms
+  $n = New-Object System.Windows.Forms.NotifyIcon
+  $n.Icon = [System.Drawing.SystemIcons]::Information
+  $n.BalloonTipTitle = $env:MSESH_TITLE
+  $n.BalloonTipText  = $env:MSESH_BODY
+  $n.Visible = $true
+  $n.ShowBalloonTip(10000)
+  Start-Sleep -Seconds 11
+  $n.Dispose()
+}' >/dev/null 2>&1 &
+  return 0
+}
+
+# Which notifier plat_notify would use. For doctor.
+plat_notifier() {
+  [ -n "${MSESH_NOTIFY_CMD:-}" ] && { printf '%s' "$MSESH_NOTIFY_CMD"; return 0; }
+  case $(plat_os) in
+    linux) command -v notify-send >/dev/null 2>&1 &&
+             { printf 'notify-send'; return 0; } ;;
+    macos) command -v terminal-notifier >/dev/null 2>&1 &&
+             { printf 'terminal-notifier'; return 0; }
+           command -v osascript >/dev/null 2>&1 &&
+             { printf 'osascript'; return 0; } ;;
+    windows|wsl) command -v "${PS_BIN:-powershell.exe}" >/dev/null 2>&1 &&
+             { printf 'Windows toast'; return 0; } ;;
+  esac
+  return 1
+}
+
+# --- paths --------------------------------------------------------------------
+# Only Claude Code's config needs this: it stores project keys as native paths.
+# Identity everywhere except Windows, where the msys view and the native view
+# of the same directory are different strings.
+plat_native_path() {
+  if plat_is_windows && command -v cygpath >/dev/null 2>&1; then
+    cygpath -m "$1" 2>/dev/null || printf '%s' "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+# Where config lives. XDG when it is set, ~/.config otherwise — including on
+# macOS, deliberately: msesh has always used ~/.config/msesh, that path is valid
+# on all three platforms, and honouring XDG when present is the portable-CLI
+# convention. Nothing existing needs migrating.
+plat_config_home() {
+  printf '%s/msesh' "${XDG_CONFIG_HOME:-$HOME/.config}"
+}
+
+# cksum, not md5sum: macOS ships `md5` with different arguments, and cksum is
+# POSIX and present everywhere. Only used to compare two files for equality.
+plat_checksum() {
+  cksum < "$1" 2>/dev/null || printf 'unreadable-%s' "$1"
+}
+
+# --- doctor's PATH advice -----------------------------------------------------
+# The correct instruction is inverted between platforms: a line in a shell rc is
+# right on Unix and is exactly the wrong answer on Windows, where PowerShell,
+# cmd and the Run box never read one. Both spellings live here so they cannot
+# drift apart.
+plat_path_check() {                     # plat_path_check DIR -> ok|fail|unknown
+  local dir=$1
+  if plat_is_windows; then
+    local reg user_path win
+    reg=$(command -v reg.exe 2>/dev/null || true)
+    [ -n "$reg" ] || reg=$(cygpath -u "${SYSTEMROOT:-C:\\Windows}" 2>/dev/null)/System32/reg.exe
+    [ -x "$reg" ] || { printf 'unknown'; return 0; }
+    win=$(cygpath -w "$dir" 2>/dev/null || printf '%s' "$dir")
+    # //v, not /v: msys rewrites a lone /v into a path before reg.exe sees it.
+    user_path=$( { "$reg" query "HKCU\\Environment" //v Path 2>/dev/null || true; } |
+                 tr -d '\r' | sed -n 's/.*REG_[A-Z_]*Z[[:space:]]*//p')
+    [ -n "$user_path" ] || { printf 'unknown'; return 0; }
+    case $user_path in *"$win"*) printf 'ok' ;; *) printf 'fail' ;; esac
+  else
+    case ":$PATH:" in *":$dir:"*) printf 'ok' ;; *) printf 'fail' ;; esac
+  fi
+}
+
+plat_path_hint() {
+  local dir=$1
+  if plat_is_windows; then
+    local win
+    win=$(cygpath -w "$dir" 2>/dev/null || printf '%s' "$dir")
+    printf 'put it on the User PATH in the registry, not in a shell rc:\n'
+    printf "    [Environment]::SetEnvironmentVariable('PATH',\n"
+    printf "      [Environment]::GetEnvironmentVariable('PATH','User') + ';%s', 'User')\n" "$win"
+    printf '    then open a new terminal — PATH is read once, at startup.'
+  else
+    printf 'add it to your shell rc:\n'
+    printf '    export PATH="%s:$PATH"\n' "$dir"
+  fi
+}
+
+# --- shells this machine actually has -----------------------------------------
+# Emitted as 'name=command' lines for the caller to register as presets. Same
+# conditional-registration idea as the agent table: a preset list that offers
+# cmd.exe on Linux is lying about the machine.
+plat_shell_presets() {
+  printf 'bash=bash -i\n'
+  printf 'sh=bash -i\n'
+  command -v zsh  >/dev/null 2>&1 && printf 'zsh=zsh -i\n'
+  command -v fish >/dev/null 2>&1 && printf 'fish=fish -i\n'
+  if plat_is_windows; then
+    command -v powershell.exe >/dev/null 2>&1 && {
+      printf 'pwsh=powershell.exe -NoLogo\n'; printf 'ps=powershell.exe -NoLogo\n'; }
+    command -v pwsh.exe >/dev/null 2>&1 && printf 'pwsh7=pwsh.exe -NoLogo\n'
+    command -v cmd.exe >/dev/null 2>&1 && printf 'cmd=cmd.exe\n'
+  else
+    command -v pwsh >/dev/null 2>&1 && {
+      printf 'pwsh=pwsh -NoLogo\n'; printf 'ps=pwsh -NoLogo\n'; }
+  fi
+  return 0
+}
