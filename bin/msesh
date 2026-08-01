@@ -103,7 +103,7 @@ NOTIFY_SET=0
 
 DEFAULT_PRESET=${MSESH_DEFAULT_PRESET:-claude}
 
-MSESH_VERSION=0.2.0
+MSESH_VERSION=0.3.0
 
 # --- help --------------------------------------------------------------------
 # Written out rather than scraped from the header comment: the comment explains
