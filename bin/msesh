@@ -115,7 +115,7 @@ SESSION_SET=0
 
 DEFAULT_PRESET=${MSESH_DEFAULT_PRESET:-claude}
 
-MSESH_VERSION=1.0.0
+MSESH_VERSION=1.1.0
 
 # The manifest and layout file format, which moves independently of the tool's
 # own version and only when the meaning of a key changes. Written into every
@@ -263,6 +263,7 @@ COMMANDS
   status [NAME]     what each pane is doing, and which window is waiting
   send NAME TEXT    type TEXT into every agent pane of NAME  (--all: every pane)
   doctor            check this machine: tmux, terminal, notifier, PATH
+  hooks [SUB]       status | install | remove the turn-end signal
   preset ...        name a command one pane runs — 'msesh help preset'
   layout ...        name a whole session — 'msesh help layout'
   help [TOPIC]      this page, or a topic below
@@ -1538,6 +1539,14 @@ PY
       fi
     fi
 
+    # The difference between knowing a turn ended and guessing from silence.
+    if [ -r "$CLAUDE_SETTINGS" ] &&
+       grep -q '"_msesh"' "$CLAUDE_SETTINGS" 2>/dev/null; then
+      say ok "turn-end hook" "installed in $CLAUDE_SETTINGS"
+    else
+      say warn "turn-end hook" "not installed — alerts fall back to the silence timer ('msesh hooks install')"
+    fi
+
     # The platform layer has to be installed beside msesh or nothing above
     # this line would have run — worth stating, since it is a new file that an
     # older install.sh would not have copied.
@@ -1592,7 +1601,7 @@ PY
     for s in "${stat_sessions[@]}"; do
       echo "$s:"
       lastwin=
-      while IFS='|' read -r widx wname wsil wbell pidx plabel pcmd pdead pdone; do
+      while IFS='|' read -r widx wname wsil wbell pidx plabel pcmd pdead pdone pturn; do
         [ -n "$widx" ] || continue
         if [ "$widx" != "$lastwin" ]; then
           state=
@@ -1604,6 +1613,7 @@ PY
         # A dead pane means remain-on-exit was set by hand; msesh does not set
         # it, but say so rather than reporting the corpse as idle.
         if [ "$pdead" = 1 ]; then note=dead
+        elif [ "$pturn" = waiting ]; then note='WAITING — turn ended'
         elif [ "$pdone" = 1 ]; then note='finished — shell only'
         # Deliberately not printing pcmd here: for a pane msesh built it is the
         # wrapper shell whatever is actually running, so it would read as
@@ -1612,7 +1622,7 @@ PY
         fi
         printf '    %-2s %-22s %s\n' "$pidx" "${plabel:-?}" "$note"
       done < <("$TMUX_BIN" list-panes -s -t "=$s" \
-        -F '#{window_index}|#{window_name}|#{window_silence_flag}|#{window_bell_flag}|#{pane_index}|#{@label}|#{pane_current_command}|#{pane_dead}|#{@done}' \
+        -F '#{window_index}|#{window_name}|#{window_silence_flag}|#{window_bell_flag}|#{pane_index}|#{@label}|#{pane_current_command}|#{pane_dead}|#{@done}|#{@turn}' \
         2>/dev/null)
     done
     exit 0 ;;
@@ -2172,6 +2182,10 @@ else
     if [ "$NOTIFY_SILENCE" != 0 ]; then
       "$TMUX_BIN" set-window-option -t "$WIN" monitor-silence "$NOTIFY_SILENCE" >/dev/null
       "$TMUX_BIN" set-window-option -t "$WIN" monitor-bell on >/dev/null
+      # Explicitly off: activity monitoring restarts the silence countdown on
+      # every byte a pane prints, so a window that is merely chatty never goes
+      # quiet enough to alert. The two monitors do not compose.
+      "$TMUX_BIN" set-window-option -t "$WIN" monitor-activity off >/dev/null
       # A window that was built seconds ago is quiet because nothing has run in
       # it yet, not because it wants you. Pre-stamp it as already-notified so
       # that first alert is swallowed; the notifier re-arms the window once you
