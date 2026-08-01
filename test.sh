@@ -225,6 +225,22 @@ else
   port_ok "nothing that needs bash 4"
 fi
 
+# Git on Windows does not track the executable bit, so a script committed from
+# there arrives mode 644 on Linux and macOS and `./install.sh` answers
+# "permission denied" — which is invisible from the machine that committed it.
+# This repo shipped that bug from its first commit until CI existed.
+if command -v git >/dev/null 2>&1 && [ -d "$SRC/../.git" ]; then
+  notexec=$(cd "$SRC/.." && git ls-files -s bin/msesh bin/msesh-notify \
+              install.sh test.sh 2>/dev/null | grep -v '^100755' || true)
+  if [ -n "$notexec" ]; then
+    port_fail "scripts are executable in git" \
+      "$(printf '%s\n' "$notexec")
+       fix: git update-index --chmod=+x <file>"
+  else
+    port_ok "scripts are executable in git"
+  fi
+fi
+
 # The platform layer must answer every question the rest of the script asks of
 # it; a missing function is a runtime error on one OS only, which is the worst
 # kind to find late.
