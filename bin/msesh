@@ -134,6 +134,7 @@ FRESH=0
 EPHEMERAL=0
 OPEN_TAB=1
 PRESEED_TRUST=1
+DRY_RUN=0
 ACTION=
 RESTORE=0
 ALL=0
@@ -366,6 +367,10 @@ OPTIONS — all of them. Only build, rebuild and add use the pane ones.
                          session outliving it
         --no-tab         build the session but do not open a terminal tab;
                          this is what 'restore --all' uses from a logon task
+    -n, --dry-run        print the panes, commands and window split this would
+                         create, then stop. Nothing is started, no manifest is
+                         written. The cheap way to check a spec line or a
+                         layout without waiting on four agents
 
   Panes
     -e, --effort LIST    effort levels for agent panes, comma separated,
@@ -708,6 +713,7 @@ while [ $# -gt 0 ]; do
     --ephemeral)  EPHEMERAL=1 ;;
     --no-tab)     OPEN_TAB=0 ;;
     --no-trust)   PRESEED_TRUST=0 ;;
+    --dry-run|-n) DRY_RUN=1 ;;
     --all)        ALL=1 ;;
     -s) SESSION=${1:?-s needs a value}; shift; SESSION_SET=1 ;;
     -d) WORKDIR=${1:?-d needs a value}; shift; DIR_SET=1 ;;
@@ -1574,6 +1580,42 @@ for c in "${PANE_CMD[@]}"; do
   agent_of_cmd "$c" >/dev/null && HAS_AGENT=1
   is_claude_cmd "$c" && HAS_CLAUDE=1
 done
+
+# --- dry run ------------------------------------------------------------------
+# Everything above resolved what this build would be; everything below starts
+# doing it. So this is where a dry run stops — after the specs, presets, agent
+# table and effort assignment have had their say, which is the part worth
+# checking, and before tmux, the trust pre-seed or the manifest are touched.
+#
+# The window split is worked out the same way the build loop does it rather
+# than being reported from it, which is the one duplication here; keeping the
+# two in step matters more than saving four lines, so they sit next to each
+# other in the file.
+if [ "$DRY_RUN" = 1 ]; then
+  echo "msesh: would build '$SESSION' — ${#PANE_CMD[@]} pane(s) in $WORKDIR"
+  dper=$PANES_PER_WINDOW
+  [ "$dper" = 0 ] && dper=${#PANE_CMD[@]}
+  dwin=0
+  for i in "${!PANE_CMD[@]}"; do
+    if [ $(( i % dper )) = 0 ]; then
+      dwin=$((dwin + 1))
+      printf '  window m%s\n' "$dwin"
+    fi
+    printf '    %-22s %s\n' "${PANE_LABEL[$i]}" "${PANE_CMD[$i]}"
+  done
+  # The settings that are not visible in the pane list but change what you get.
+  printf '  %s window(s), %s pane(s) per window' "$dwin" \
+    "$([ "$PANES_PER_WINDOW" = 0 ] && echo all || echo "$PANES_PER_WINDOW")"
+  [ "$EAGER" = 0 ] && printf ', agent panes pre-typed only'
+  if [ "$NOTIFY_SILENCE" = 0 ]; then printf ', no toast'
+  else printf ', toast after %ss of silence' "$NOTIFY_SILENCE"; fi
+  [ "$EPHEMERAL" = 1 ] && printf ', dies with the tab'
+  printf '\n'
+  [ "$PRESEED_TRUST" = 1 ] && [ "$HAS_CLAUDE" = 1 ] &&
+    echo "  would pre-seed workspace trust for $WORKDIR"
+  echo "msesh: nothing was built (--dry-run)"
+  exit 0
+fi
 
 # --- workspace trust ---------------------------------------------------------
 # Claude Code specifically, and gated on HAS_CLAUDE for that reason: this reads
