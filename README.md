@@ -1,6 +1,8 @@
 # msesh
 
-Multi-session management for [Claude Code](https://claude.ai/code) on Windows. One command opens a tmux session of N panes in a new Windows Terminal tab, each pane running a Claude session, a shell, or anything you name.
+Multi-session management for [Claude Code](https://claude.ai/code) and other coding agents. One command opens a tmux session of N panes in a new terminal tab, each pane running an agent, a shell, or anything you name.
+
+Runs on **Linux, macOS, Windows (MSYS2) and WSL** — tested on all three in CI, including under macOS's stock bash 3.2.
 
 ```console
 $ msesh build 4                        # four Claude panes, tiled, in a new tab
@@ -21,9 +23,9 @@ $ msesh attach work                    # later: back to 'work', rebuilt if it di
 
 **Sized.** Any pane count, not a fixed grid. Panes tile up to four per window, then spill into new tmux windows (`prefix+n` / `prefix+p` to move between them). `-w` changes the threshold, `-w 0` crams everything into one window.
 
-**Noisy, and specific about it.** A pane that stops producing output has usually finished its turn and is waiting on you. msesh wires tmux's silence monitor to a Windows toast — and because a toast is gone in seconds and does not say where to look, it marks the waiting window in three places that stay until you deal with them:
+**Noisy, and specific about it.** A pane that stops producing output has usually finished its turn and is waiting on you. msesh wires tmux's silence monitor to a desktop notification — and because a toast is gone in seconds and does not say where to look, it marks the waiting window in three places that stay until you deal with them:
 
-- **the tab** — the Windows Terminal tab title becomes `(!) msesh: work — window 2 waiting`, so an unfocused tab advertises itself
+- **the tab** — the terminal tab title becomes `(!) msesh: work — window 2 waiting`, so an unfocused tab advertises itself
 - **the status bar** — the waiting window turns red, with a `!`
 - **the block itself** — every pane border in that window turns red and reads `<< WAITING >>`
 
@@ -31,15 +33,22 @@ All three clear the moment you switch to that window. tmux only alerts on window
 
 Alerts are raised per *window*, never per pane — a window counts as silent only once every pane in it is — so the window is what gets highlighted. Build with `-w 1` if you would rather have one pane per window, and therefore one alert per pane.
 
-**Reachable from any shell.** `msesh` means the same thing typed into PowerShell, cmd, Windows Terminal, VS Code's terminal, the Run box, Git Bash or MSYS2. tmux only ships with MSYS2, so that is where the work happens; everything else is handed over transparently.
+**Reachable from any shell.** `msesh` means the same thing typed into bash, zsh, fish, PowerShell, cmd, VS Code's terminal or the Windows Run box. On Windows, where tmux ships only with MSYS2, msesh hands itself over there transparently.
 
 ## Requirements
 
-- **MSYS2** with tmux (`pacman -S tmux`). This is the hard requirement — there is no native Windows tmux.
-- **Windows Terminal**, to open a tab for you. Without it msesh still builds sessions; use `--no-tab` and attach yourself.
-- **Claude Code** on `PATH`, if you want the Claude presets to do anything.
+- **tmux** and **bash**. That is the hard requirement. On Linux and macOS tmux is a package (`apt install tmux`, `brew install tmux`); on Windows it ships only with [MSYS2](https://www.msys2.org) (`pacman -S tmux`), and msesh hands itself over to MSYS2 from any other shell.
+- **A terminal emulator**, if you want msesh to open a window for you. It looks for Windows Terminal, iTerm/Terminal.app, or kitty/alacritty/wezterm/gnome-terminal/konsole and friends. Without one, msesh still builds the session and prints the attach command — which is the right behaviour on a headless box.
+- **A notifier**, if you want desktop toasts: `notify-send`, `terminal-notifier`/`osascript`, or Windows toast. Without one, alerts fall back to a tmux message.
+- **Claude Code** (or codex, or whatever you put in a preset) on `PATH`, if you want the agent presets to do anything.
 
-`./install.sh --check` reports on all three without installing.
+Only the first is required; everything else degrades to something useful. `./install.sh --check` and `msesh doctor` both report what this machine actually resolved to.
+
+### Platform support
+
+Everything platform-specific lives in one file, `bin/msesh-platform`, which answers five questions: where tmux is, how to reach a runtime that has it, how to open a terminal, how to raise a notification, and how to spell a path. `bin/msesh` and `bin/msesh-notify` may not name an operating system or a platform binary at all — `./test.sh` enforces that with a grep, and CI runs the suite on Linux, macOS and MSYS2 on every push.
+
+msesh does not branch on OS names to decide what to run. It uses the OS only to *order* a list of candidates, then picks the first that exists — because the OS does not tell you what is installed, and "any platform, any installation" is mostly the second half.
 
 ## Install
 
@@ -49,7 +58,7 @@ cd msesh
 ./install.sh                 # copies bin/* into ~/bin
 ```
 
-From PowerShell or cmd — where `./install.sh` is not something you can run — use the shim next to it, which takes the same arguments:
+On Windows, from PowerShell or cmd — where `./install.sh` is not something you can run — use the shim next to it, which takes the same arguments:
 
 ```powershell
 .\install.cmd
@@ -58,7 +67,7 @@ From PowerShell or cmd — where `./install.sh` is not something you can run —
 
 Options: `--prefix DIR` to install elsewhere, `--link` to symlink instead of copy so `git pull` updates the installed copy (needs Developer Mode on Windows, falls back to copying), `--uninstall` to remove.
 
-Make sure the prefix is on your `PATH` — the installer warns if it is not. On Windows that means the **User `PATH`** in the registry, not a line in `.bashrc`: PowerShell, cmd and the Run box never read your shell rc, and `msesh` will look broken in exactly those places if you only do the latter.
+Make sure the prefix is on your `PATH` — the installer warns if it is not, and tells you the right way to fix it for the platform you are on. Those differ: on Unix a line in your shell rc is the answer, and on Windows it is the **User `PATH`** in the registry, because PowerShell, cmd and the Run box never read a shell rc. Getting that backwards on Windows makes msesh work in bash and look broken everywhere else.
 
 ## Commands
 
@@ -76,7 +85,7 @@ Every command is a word, not a flag. `msesh help` lists them; `msesh help TOPIC`
 | `msesh list` | live sessions, layouts and recorded sessions |
 | `msesh status [NAME]` | what each pane is doing, and which window is waiting |
 | `msesh send NAME TEXT` | type TEXT into every agent pane of NAME (`--all` for every pane) |
-| `msesh doctor` | check this machine: tmux, MSYS2, PATH, config files |
+| `msesh doctor` | check this machine: platform, tmux, terminal, notifier, PATH, files |
 | `msesh preset ...` | name one pane: `list`, `show NAME`, `make [NAME]`, `remove NAME`, `edit` |
 | `msesh layout ...` | name a whole session: `list`, `show`, `make`, `save`, `remove`, `edit` |
 | `msesh help [TOPIC]` | topics: `specs`, `options`, `preset`, `layout`, `agents`, `files`, `env` |
