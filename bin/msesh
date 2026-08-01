@@ -5,7 +5,7 @@
 #
 # What msesh does:
 #
-#   lazy       --lazy opens claude panes with the command pre-typed but NOT run,
+#   lazy       --lazy opens agent panes with the command pre-typed but NOT run,
 #              so nothing cold-starts until you press Enter in the panes you
 #              actually want. Panes start on their own otherwise.
 #   persistent sessions outlive the tab. `msesh attach NAME` returns to the live
@@ -155,6 +155,97 @@ DEFAULT_PRESET=${MSESH_DEFAULT_PRESET:-claude}
 
 MSESH_VERSION=0.4.0
 
+# --- agents ------------------------------------------------------------------
+# Some panes hold an interactive coding agent rather than a shell, and two of
+# msesh's behaviours are about that distinction: -e injects a reasoning-effort
+# flag, and --lazy pre-types the command instead of running it, because these
+# are the panes that are slow and expensive to start.
+#
+# Neither behaviour is about Claude. This used to be one is_claude_cmd()
+# returning true or false, which meant 'agent' and 'claude' were the same idea
+# in the code and -e could only ever work for one vendor. The table below is
+# the whole of what msesh knows about any particular agent — its name, how it
+# spells its effort flag, and which levels it accepts — so teaching msesh about
+# another one is a line here, not a change to the logic.
+#
+# The flag carries its own separator: 'claude --effort high' takes a space,
+# 'codex -c model_reasoning_effort=high' takes none. An empty flag means the
+# agent has no effort setting, and its panes are then left out of -e entirely
+# rather than being an error — a mixed session should not have to explain
+# itself. Levels are listed low to high, and a level an agent does not have is
+# an error naming both, because silently running at some other effort is worse
+# than not starting.
+AGENT_NAMES=()
+AGENT_EFFORT=()    # flag spelling, including its separator; '' for none
+AGENT_LEVELS=()    # accepted levels, low to high; '' for none
+
+agent_register() {
+  local i
+  for i in "${!AGENT_NAMES[@]}"; do
+    if [ "${AGENT_NAMES[$i]}" = "$1" ]; then
+      AGENT_EFFORT[$i]=$2; AGENT_LEVELS[$i]=$3; return
+    fi
+  done
+  AGENT_NAMES+=("$1"); AGENT_EFFORT+=("$2"); AGENT_LEVELS+=("$3")
+}
+
+agent_register claude "--effort " "low,medium,high,xhigh"
+agent_register codex  "-c model_reasoning_effort=" "low,medium,high"
+agent_register gemini "" ""
+agent_register aider  "" ""
+
+# Same 'name = value' shape as presets.conf, with the two fields a registration
+# needs split on '|', so an agent msesh has never heard of is a line in a file
+# rather than a patch to this script:
+#
+#   myagent = --reasoning | quick,deep
+#   otheragent =                        (no effort setting)
+AGENT_FILE=${MSESH_AGENTS:-$HOME/.config/msesh/agents.conf}
+if [ -r "$AGENT_FILE" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line%%$'\r'}
+    case $line in ''|'#'*) continue ;; *=*) ;; *) continue ;; esac
+    aname=${line%%=*}; arest=${line#*=}
+    aflag=${arest%%|*}
+    case $arest in *'|'*) alevels=${arest#*|} ;; *) alevels= ;; esac
+    aname=$(printf '%s' "$aname" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    alevels=$(printf '%s' "$alevels" | sed 's/[[:space:]]//g')
+    # Only the leading space is trimmed from the flag: a trailing one is how
+    # '--effort ' says it wants a space before its value.
+    aflag=${aflag#"${aflag%%[![:space:]]*}"}
+    [ -n "$aname" ] && agent_register "$aname" "$aflag" "$alevels"
+  done < "$AGENT_FILE"
+fi
+
+# The agent a pane command runs, or nothing if it is a shell or a plain
+# command. Read from the command itself rather than a marker in the presets
+# file, so a user preset like `review = claude ... /code-review` is classified
+# correctly for free, and so is `mycodex = codex --full-auto`.
+agent_of_cmd() {
+  local first=${1%% *} base i
+  base=${first##*[/\\]}
+  base=${base%.exe}; base=${base%.cmd}; base=${base%.bat}
+  for i in "${!AGENT_NAMES[@]}"; do
+    if [ "$base" = "${AGENT_NAMES[$i]}" ]; then printf '%s' "$base"; return 0; fi
+  done
+  return 1
+}
+
+agent_field() {                       # agent_field NAME EFFORT|LEVELS
+  local i
+  for i in "${!AGENT_NAMES[@]}"; do
+    [ "${AGENT_NAMES[$i]}" = "$1" ] || continue
+    case $2 in
+      effort) printf '%s' "${AGENT_EFFORT[$i]}" ;;
+      levels) printf '%s' "${AGENT_LEVELS[$i]}" ;;
+    esac
+    return 0
+  done
+  return 1
+}
+
+is_claude_cmd() { [ "$(agent_of_cmd "$1" || true)" = claude ]; }
+
 # --- help --------------------------------------------------------------------
 # Written out rather than scraped from the header comment: the comment explains
 # the design to whoever is editing this file, which is not what someone typing
@@ -199,7 +290,7 @@ COMMANDS
 OPTIONS you will actually type
   -s, --session NAME   name the session (default: $SESSION)
   -d, --dir DIR        working directory for every pane (default: \$PWD)
-  -e, --effort LIST    effort for claude panes: 'ladder', or l,m,h,x in order
+  -e, --effort LIST    effort for agent panes: 'ladder', or l,m,h,x in order
   -w, --width N        max panes per window before spilling (default: 4)
 
   The rest — --lazy, --notify, --no-tab, --ephemeral, --no-trust — are in
@@ -217,7 +308,8 @@ HELP TOPICS
   msesh help specs      how the pane arguments are read
   msesh help options    every option, grouped
   msesh help preset     the preset commands and the presets file
-  msesh help files      where presets and manifests live
+  msesh help agents     which commands count as an agent, and their effort
+  msesh help files      where presets, layouts and manifests live
   msesh help env        environment variables msesh honours
 EOF
 }
@@ -259,13 +351,16 @@ OPTIONS — all of them. Only build, rebuild and add use the pane ones.
                          this is what 'restore --all' uses from a logon task
 
   Panes
-    -e, --effort LIST    effort levels for claude panes, comma separated,
+    -e, --effort LIST    effort levels for agent panes, comma separated,
                          assigned in pane order; the last repeats for any
                          panes left over. l/m/h/x expand to low/medium/high/
-                         xhigh; 'ladder' means low,medium,high
+                         xhigh; 'ladder' means low,medium,high. Panes running
+                         an agent with no effort setting are skipped, and a
+                         level its agent does not have is an error — see
+                         'msesh help agents'
     -w, --width N        max panes per window before spilling (default: 4).
                          0 puts every pane in one window, however small
-        --lazy           pre-type claude panes' commands without running them,
+        --lazy           pre-type agent panes' commands without running them,
                          so you press Enter in the ones you actually want
 
   Notifications
@@ -329,15 +424,58 @@ Built in: claude, cly, plan, safe, bash/sh, pwsh/ps, cmd.
 Your own live in
   $presets
 as 'name = command' lines, one per line, and override a built-in of the same
-name. A preset whose command runs claude is treated as a claude pane: it gets
---effort injected when you pass -e, and it is what --lazy leaves pre-typed
-rather than started. Everything else is run as-is.
+name. A preset whose command runs a known agent — claude, codex, and whatever
+else you have registered — is treated as an agent pane: it gets an effort flag
+injected when you pass -e, and it is what --lazy leaves pre-typed rather than
+started. See 'msesh help agents'. Everything else is run as-is.
 
   review = claude --remote-control --dangerously-skip-permissions /code-review
   watch  = npm run dev
 
 For a one-off command you do not want to name, put it in a spec instead:
   msesh build 2 claude '!npm run dev'
+EOF
+}
+
+# Printed from the table itself rather than written out, so a registration
+# added in agents.conf shows up here without anyone remembering to say so.
+help_agents() {
+  local file=${MSESH_AGENTS:-$HOME/.config/msesh/agents.conf} i flag levels
+  cat <<EOF
+AGENTS — the pane commands msesh treats as an interactive assistant rather
+than a shell. Two things follow from being one:
+
+  -e       injects that agent's effort flag, spelled its way
+  --lazy   pre-types the pane instead of running it, since these are the
+           commands that are slow and expensive to start
+
+A pane is matched on the command it runs, so 'review = claude ... /code-review'
+and 'yolo = codex --full-auto' are recognised without being listed.
+
+EOF
+  printf '  %-10s %-28s %s\n' AGENT 'EFFORT FLAG' 'LEVELS'
+  for i in "${!AGENT_NAMES[@]}"; do
+    flag=${AGENT_EFFORT[$i]}; levels=${AGENT_LEVELS[$i]}
+    [ -n "$flag" ]   || flag='(none)'
+    [ -n "$levels" ] || levels='—'
+    printf '  %-10s %-28s %s\n' "${AGENT_NAMES[$i]}" "$flag" "${levels//,/, }"
+  done
+  cat <<EOF
+
+An agent with no effort flag is left out of -e rather than made an error, so a
+session mixing one with claude still takes a single -e. Asking for a level an
+agent does not have is an error naming both, because running at some other
+effort than the one you asked for is worse than not starting.
+
+Add your own in
+  $file
+as 'name = flag | levels', where the flag carries its own separator:
+
+  myagent    = --reasoning | quick,deep
+  otheragent =                              (no effort setting)
+
+Only these two facts are per-agent. Everything else msesh does — panes,
+windows, alerts, layouts — is the same whatever is running in the pane.
 EOF
 }
 
@@ -371,6 +509,7 @@ ENVIRONMENT — everything machine-specific, so the script itself stays portable
   CLAUDE_JSON           claude's config, for the trust pre-seed
   MSESH_DEFAULT_PRESET  what a bare 'msesh build 4' launches  (default: claude)
   MSESH_PRESETS         presets file
+  MSESH_AGENTS          agents file — see 'msesh help agents'
   MSESH_STATE           manifest directory
   MSESH_NOTIFIER        the toast helper             (default: msesh-notify)
   MSESH_HIGHLIGHT       0 to stop marking a waiting window in the tab title,
@@ -389,11 +528,12 @@ help_topic() {
     spec|specs|panes)             help_specs ;;
     option|options|flags)         help_options ;;
     preset|presets)               help_preset ;;
+    agent|agents)                 help_agents ;;
     file|files|manifest|manifests) help_files ;;
     env|environment|vars)         help_env ;;
     build|rebuild|add)            help_specs; echo; help_options ;;
     *) echo "msesh: no help topic '$1'" >&2
-       echo "topics: specs, options, preset, files, env" >&2
+       echo "topics: specs, options, preset, agents, files, env" >&2
        exit 1 ;;
   esac
 }
@@ -617,15 +757,6 @@ if [ -r "$PRESET_FILE" ]; then
   done < "$PRESET_FILE"
 fi
 
-# A pane is a "claude pane" when its command actually runs claude — that is
-# what earns it --effort injection and lazy start. Deciding this from the
-# command rather than from a marker in the presets file means a user preset
-# like `review = claude ... /code-review` is classified correctly for free.
-is_claude_cmd() {
-  local first=${1%% *}
-  case ${first##*[/\\]} in claude|claude.exe|claude.cmd) return 0 ;; esac
-  return 1
-}
 
 # --- manifests --------------------------------------------------------------
 # A tmux session survives its tab closing but not the machine restarting, and
@@ -868,7 +999,7 @@ preset_make() {
   local dir effort width notify
   ask "Working directory" "$PWD" dir
   [ -d "$dir" ] || die "no such directory: $dir"
-  ask "Effort for claude panes — blank, 'ladder', or l,m,h" "" effort
+  ask "Effort for agent panes — blank, 'ladder', or l,m,h" "" effort
   ask "Max panes per window" "4" width
   case $width in ''|*[!0-9]*) die "width must be a number, got '$width'" ;; esac
   ask "Toast after this many seconds of silence (0 = off)" "20" notify
@@ -1065,8 +1196,11 @@ done
 [ "${#PANE_CMD[@]}" -gt 0 ] || add_panes "$DEFAULT_PRESET" 1
 
 # --- effort levels ----------------------------------------------------------
-# Assigned across claude panes in order, last value repeating. Untouched if a
-# preset already spells out --effort itself.
+# Assigned in order across the panes that can take one, last value repeating.
+# 'ladder' is spelled out in generic level names rather than resolved per agent
+# so that one -e means one sequence however many different agents are in the
+# session; whether a given agent actually has the level it lands on is checked
+# below, per pane.
 EFFORTS=()
 if [ -n "$EFFORTS_RAW" ]; then
   [ "$EFFORTS_RAW" = ladder ] && EFFORTS_RAW=low,medium,high
@@ -1083,23 +1217,56 @@ if [ -n "$EFFORTS_RAW" ]; then
   done
 fi
 
+# A pane takes part in -e only if its agent has an effort flag at all. A shell
+# pane, or an agent that has no such setting, is skipped rather than counted
+# and then not injected — otherwise a session mixing claude with gemini would
+# assign the second level to a pane that cannot use it and quietly shift every
+# level after it by one.
 if [ "${#EFFORTS[@]}" -gt 0 ]; then
   ci=0
   for i in "${!PANE_CMD[@]}"; do
-    is_claude_cmd "${PANE_CMD[$i]}" || continue
-    case ${PANE_CMD[$i]} in *--effort*) continue ;; esac
+    agent=$(agent_of_cmd "${PANE_CMD[$i]}") || continue
+    flag=$(agent_field "$agent" effort)
+    [ -n "$flag" ] || continue
+    # Already spelled out by the preset itself — that is a deliberate choice
+    # and outranks the command line. Matched on the whole flag minus its
+    # trailing separator ('--effort', '-c model_reasoning_effort='), not on its
+    # first word, or codex's '-c' would match any -c the command already had.
+    flagtext=${flag%"${flag##*[![:space:]]}"}
+    case ${PANE_CMD[$i]} in *"$flagtext"*) continue ;; esac
+
     idx=$ci
     [ "$idx" -ge "${#EFFORTS[@]}" ] && idx=$(( ${#EFFORTS[@]} - 1 ))
-    PANE_CMD[$i]="${PANE_CMD[$i]} --effort ${EFFORTS[$idx]}"
-    PANE_LABEL[$i]="${PANE_LABEL[$i]}/${EFFORTS[$idx]}"
+    want=${EFFORTS[$idx]}
+    levels=$(agent_field "$agent" levels)
+    case ",$levels," in
+      *",$want,"*) ;;
+      *) die "pane $((i + 1)) runs $agent, which has no '$want' effort — it takes ${levels//,/, }" ;;
+    esac
+
+    PANE_CMD[$i]="${PANE_CMD[$i]} $flag$want"
+    PANE_LABEL[$i]="${PANE_LABEL[$i]}/$want"
     ci=$((ci + 1))
   done
 fi
 
+# Two different questions, kept apart on purpose. HAS_AGENT is "is anything in
+# here slow to start", which is what --lazy is about; HAS_CLAUDE is only ever
+# used for the workspace-trust pre-seed, which really is a Claude Code file
+# format and has no business being asked about any other agent.
+HAS_AGENT=0
 HAS_CLAUDE=0
-for c in "${PANE_CMD[@]}"; do is_claude_cmd "$c" && { HAS_CLAUDE=1; break; }; done
+for c in "${PANE_CMD[@]}"; do
+  agent_of_cmd "$c" >/dev/null && HAS_AGENT=1
+  is_claude_cmd "$c" && HAS_CLAUDE=1
+done
 
 # --- workspace trust ---------------------------------------------------------
+# Claude Code specifically, and gated on HAS_CLAUDE for that reason: this reads
+# and writes ~/.claude.json, which is that one tool's file. Another agent's
+# equivalent, if it ever needs one, belongs in its own function beside this —
+# not folded into it behind a generic name.
+#
 # Every claude pane otherwise stops on "do you trust the files in this folder?",
 # so record the answer up front. claude walks the tree upwards, so an
 # already-trusted ancestor means there is nothing to write.
@@ -1188,7 +1355,7 @@ else
     label=${PANE_LABEL[$i]}
 
     lazy=0
-    [ "$EAGER" = 0 ] && is_claude_cmd "$cmd" && lazy=1
+    [ "$EAGER" = 0 ] && agent_of_cmd "$cmd" >/dev/null && lazy=1
     [ "$lazy" = 1 ] && launch=$(lazy_shell) || launch=$(pane_cmd "$cmd")
 
     slot=$(( i % per ))
@@ -1332,8 +1499,8 @@ else
   n=${#PANE_CMD[@]}
   w=${#WINDOWS[@]}
   echo "msesh: '$SESSION' — $n pane(s) across $w window(s)"
-  [ "$EAGER" = 0 ] && [ "$HAS_CLAUDE" = 1 ] &&
-    echo "msesh: --lazy, so claude panes are pre-typed, not started — press Enter in the ones you want"
+  [ "$EAGER" = 0 ] && [ "$HAS_AGENT" = 1 ] &&
+    echo "msesh: --lazy, so agent panes are pre-typed, not started — press Enter in the ones you want"
 fi
 
 # --- lifetime ---------------------------------------------------------------
