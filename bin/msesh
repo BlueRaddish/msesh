@@ -223,6 +223,22 @@ OPTIONS — all of them. Only build, rebuild and add use the pane ones.
                          (default: 20, 0 = off)
         --no-notify      same as --notify 0
 
+    A toast is gone in seconds and does not say where to look, so the alert
+    is also shown in three places that stay put until you deal with it:
+
+      the tab       the Windows Terminal tab title becomes
+                    '(!) msesh: NAME — window 2 waiting'
+      the status    the waiting window is red, with a '!', in tmux's status bar
+      the block     every pane border in that window turns red and says
+                    '<< WAITING >>'
+
+    All three clear the moment you switch to that window. tmux raises alerts
+    per window, never per pane — a window is silent only once every pane in it
+    is — so the window is what gets highlighted. Build with '-w 1' if you want
+    one pane per window and therefore an alert per pane.
+
+    MSESH_HIGHLIGHT=0 turns all three off and leaves the toast alone.
+
   Other
         --all            restore or kill every known session, not just one
         --no-trust       skip the workspace-trust pre-seed
@@ -307,6 +323,8 @@ ENVIRONMENT — everything machine-specific, so the script itself stays portable
   MSESH_PRESETS         presets file
   MSESH_STATE           manifest directory
   MSESH_NOTIFIER        the toast helper             (default: msesh-notify)
+  MSESH_HIGHLIGHT       0 to stop marking a waiting window in the tab title,
+                        the status bar and the pane borders
   MSESH_BASH            an MSYS2 bash.exe outright
   MSESH_MSYS_ROOT       an MSYS2 install root, if it is somewhere unusual
   TMUX_BIN              tmux
@@ -1164,8 +1182,13 @@ else
   for wname in "${WINDOWS[@]}"; do
     WIN="$SESSION:$wname"
     "$TMUX_BIN" set-window-option -t "$WIN" pane-border-status top >/dev/null
+    # The @alert branch is what msesh-notify switches on when this window
+    # raises an alert, so the toast and the screen agree about which block is
+    # waiting. A user option set on the window resolves for every pane in it,
+    # so one option lights the whole block. The comma inside the style has to
+    # be escaped or the format parser reads it as the end of the true branch.
     "$TMUX_BIN" set-window-option -t "$WIN" pane-border-format \
-      ' #{pane_index}: #{@label} ' >/dev/null
+      ' #{?@alert,#[fg=colour196#,bold]<< WAITING >>#[default] ,}#{pane_index}: #{@label} ' >/dev/null
     if [ "$NOTIFY_SILENCE" != 0 ]; then
       "$TMUX_BIN" set-window-option -t "$WIN" monitor-silence "$NOTIFY_SILENCE" >/dev/null
       "$TMUX_BIN" set-window-option -t "$WIN" monitor-bell on >/dev/null
@@ -1198,6 +1221,42 @@ else
     for ev in alert-silence alert-bell alert-activity; do
       "$TMUX_BIN" set-hook -t "$SESSION" "$ev" "run-shell -b '$NOTIFIER'" >/dev/null
     done
+    # tmux has hooks for an alert being raised and none for one being cleared,
+    # so without this the notifier would not run again until the next alert
+    # anywhere in the session — and the red border would still be sitting on a
+    # window you had already dealt with. Switching windows is what clears an
+    # alert, so it is also what has to take the highlight off.
+    "$TMUX_BIN" set-hook -t "$SESSION" after-select-window \
+      "run-shell -b '$NOTIFIER'" >/dev/null
+
+    # --- say it on screen too -------------------------------------------
+    # A toast tells you something is waiting and then disappears; it does not
+    # survive being missed, and with several sessions in several tabs it does
+    # not say where to go. These make the alert visible in the terminal for as
+    # long as it lasts, at each level you might be looking at:
+    #
+    #   the tab      set-titles puts the alert in the Windows Terminal tab
+    #                title, so an unfocused tab advertises itself
+    #   the status   the alerting window is marked in the status bar. tmux's
+    #                own '~' silence flag comes from #F, which a status format
+    #                that spells out '#I #W' — as this machine's does — drops
+    #                on the floor, so it is put back explicitly here
+    #   the block    msesh-notify colours the window's borders, above
+    #
+    # Session-scoped, so nothing outside msesh's own sessions is restyled.
+    # Set MSESH_HIGHLIGHT=0 to leave all three alone.
+    if [ "${MSESH_HIGHLIGHT:-1}" != 0 ]; then
+      # Nested #{?} rather than #{||:}: both evaluate the same, and this one
+      # cannot be misread when someone comes back to edit it.
+      "$TMUX_BIN" set-option -t "$SESSION" window-status-format \
+        '#{?window_silence_flag,#[fg=colour196#,bold] #I #W !#[default],#{?window_bell_flag,#[fg=colour196#,bold] #I #W !#[default], #I #W }}' >/dev/null
+      "$TMUX_BIN" set-option -t "$SESSION" set-titles on >/dev/null
+      # session_alerts spells the alert type into the list — silence is '2~',
+      # not '2' — and the number on its own is the key you press, so the
+      # suffixes come off before the title claims otherwise.
+      "$TMUX_BIN" set-option -t "$SESSION" set-titles-string \
+        '#{?session_alerts,(!) ,}msesh: #S#{?session_alerts, — window #{s/[~!]//:session_alerts} waiting,}' >/dev/null
+    fi
   fi
 
   manifest_save
@@ -1239,5 +1298,16 @@ WT_BIN=${WT_BIN:-wt.exe}
 WT_PROFILE=${WT_PROFILE:-MSYS2 UCRT64}
 WT_START=$(cygpath -w "$WORKDIR" 2>/dev/null || echo "$WORKDIR")
 
-"$WT_BIN" -w 0 nt -p "$WT_PROFILE" -d "$WT_START" --title "msesh: $SESSION" \
+# --title would pin the tab's name for good: Windows Terminal treats it as an
+# override and stops listening to the escape sequence tmux uses to set titles.
+# That is a fine trade for a static label and a bad one once the title is
+# carrying "which window is waiting on you", so the title is left to tmux —
+# whose set-titles-string was set above — and only pinned when that whole
+# mechanism has been turned off.
+WT_TITLE=()
+if [ "${MSESH_HIGHLIGHT:-1}" = 0 ] || [ "$NOTIFY_SILENCE" = 0 ]; then
+  WT_TITLE=(--title "msesh: $SESSION")
+fi
+
+"$WT_BIN" -w 0 nt -p "$WT_PROFILE" -d "$WT_START" ${WT_TITLE[@]+"${WT_TITLE[@]}"} \
   "$MSYS_BASH" -l -c "tmux attach -t $SESSION || exec bash -l"

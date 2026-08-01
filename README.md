@@ -17,7 +17,15 @@ $ msesh attach work                    # later: back to 'work', rebuilt if it di
 
 **Sized.** Any pane count, not a fixed grid. Panes tile up to four per window, then spill into new tmux windows (`prefix+n` / `prefix+p` to move between them). `-w` changes the threshold, `-w 0` crams everything into one window.
 
-**Noisy.** A pane that stops producing output has usually finished its turn and is waiting on you. msesh wires tmux's silence monitor to a Windows toast, so you get told — with the pane's label, so you know where to go. tmux only alerts on windows you are *not* looking at, so the pane on screen never nags. `--notify` tunes the threshold, `--no-notify` turns it off.
+**Noisy, and specific about it.** A pane that stops producing output has usually finished its turn and is waiting on you. msesh wires tmux's silence monitor to a Windows toast — and because a toast is gone in seconds and does not say where to look, it marks the waiting window in three places that stay until you deal with them:
+
+- **the tab** — the Windows Terminal tab title becomes `(!) msesh: work — window 2 waiting`, so an unfocused tab advertises itself
+- **the status bar** — the waiting window turns red, with a `!`
+- **the block itself** — every pane border in that window turns red and reads `<< WAITING >>`
+
+All three clear the moment you switch to that window. tmux only alerts on windows you are *not* looking at, so the window on screen never nags. `--notify` tunes the threshold, `--no-notify` turns it off, `MSESH_HIGHLIGHT=0` keeps the toast but drops the three markers.
+
+Alerts are raised per *window*, never per pane — a window counts as silent only once every pane in it is — so the window is what gets highlighted. Build with `-w 1` if you would rather have one pane per window, and therefore one alert per pane.
 
 **Reachable from any shell.** `msesh` means the same thing typed into PowerShell, cmd, Windows Terminal, VS Code's terminal, the Run box, Git Bash or MSYS2. tmux only ships with MSYS2, so that is where the work happens; everything else is handed over transparently.
 
@@ -136,6 +144,7 @@ Everything machine-specific is an environment variable, so msesh should work on 
 | `MSESH_PRESETS`, `MSESH_STATE` | presets file and manifest directory |
 | `MSESH_DEFAULT_PRESET` | what a bare `msesh build 4` launches |
 | `TMUX_BIN`, `WT_BIN`, `WT_PROFILE` | tmux and Windows Terminal binaries and profile |
+| `MSESH_HIGHLIGHT` | `0` to stop marking a waiting window in the tab title, status bar and pane borders |
 
 `msesh help env` lists the lot.
 

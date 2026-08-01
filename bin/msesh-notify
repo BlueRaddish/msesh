@@ -64,19 +64,58 @@ fi
 # so nothing rewrites the argv on the way across.
 mapfile -t rows < <(
   "$TMUX_BIN" list-windows -a \
-    -F '#{session_name}|#{window_index}|#{window_name}|#{window_silence_flag}#{window_activity_flag}#{window_bell_flag}|#{@msesh}|#{@msesh_notified}' \
+    -F '#{session_name}|#{window_index}|#{window_name}|#{window_silence_flag}#{window_activity_flag}#{window_bell_flag}|#{@msesh}|#{@msesh_notified}|#{@alert}' \
     2>/dev/null
 )
 
+# --- highlighting -------------------------------------------------------------
+# A toast is gone in seconds and says nothing about where to look; with several
+# sessions across several tabs, "something finished" is not an answer. So the
+# alerting window is marked in tmux for as long as the alert lasts.
+#
+# tmux has no per-pane silence flag — alerts are raised on the window, and a
+# window is silent only when every pane in it is — so the window is the honest
+# unit to highlight, and all of its borders light up together. Cleared by the
+# re-arm branch below, which fires once you have actually looked at it.
+#
+# @alert is read by the pane-border-format msesh installs; the border styles
+# are unset rather than set back, so whatever the session or ~/.tmux.conf says
+# takes over again without this having to know what that was.
+highlight_on() {
+  "$TMUX_BIN" set-window-option -t "$1" @alert 1 2>/dev/null
+  "$TMUX_BIN" set-window-option -t "$1" pane-border-style "fg=colour196,bold" 2>/dev/null
+  "$TMUX_BIN" set-window-option -t "$1" pane-active-border-style "fg=colour196,bold" 2>/dev/null
+}
+
+highlight_off() {
+  "$TMUX_BIN" set-window-option -t "$1" @alert "" 2>/dev/null
+  "$TMUX_BIN" set-window-option -u -t "$1" pane-border-style 2>/dev/null
+  "$TMUX_BIN" set-window-option -u -t "$1" pane-active-border-style 2>/dev/null
+}
+
+# Spelled out rather than assumed to be C-b: the toast tells you which key to
+# press, and being told the wrong one is worse than not being told.
+PREFIX=$("$TMUX_BIN" show-options -gv prefix 2>/dev/null || echo prefix)
+[ -n "$PREFIX" ] || PREFIX=prefix
+
 for row in ${rows[@]+"${rows[@]}"}; do
-  IFS='|' read -r sess widx wname flags stamp notified <<< "$row"
+  IFS='|' read -r sess widx wname flags stamp notified alerted <<< "$row"
   [ "$stamp" = 1 ] || continue
 
   if [ "$flags" = "000" ]; then
     # Alert cleared (you looked at it) — re-arm so the next one toasts again.
-    [ -n "$notified" ] && "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified "" 2>/dev/null
+    [ -n "$notified" ] &&
+      "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified "" 2>/dev/null
+    [ -n "$alerted" ] && highlight_off "$sess:$widx"
     continue
   fi
+
+  # This window is waiting, so mark it on screen — whether or not it is going
+  # to toast. A freshly built window is quiet because nothing has run in it
+  # yet, which is why the first alert's toast is swallowed; but a border
+  # colour interrupts no one, so it does not need that suppression, and a
+  # window that is genuinely waiting should look like it from the start.
+  [ -n "$alerted" ] || highlight_on "$sess:$widx"
 
   [ -n "$notified" ] && continue          # already toasted this alert
   "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified 1 2>/dev/null
@@ -86,5 +125,10 @@ for row in ${rows[@]+"${rows[@]}"}; do
            | paste -sd ', ' - 2>/dev/null)
   [ -n "$labels" ] || labels=$wname
 
-  toast "msesh: $sess waiting" "window $wname ($labels) has gone quiet — it is probably waiting on you"
+  # Session name first, because that is what the Windows Terminal tab is
+  # called; window index second, because that is the key you press once you
+  # are in it. Both, in that order, are the whole route from a toast to the
+  # thing that is waiting.
+  toast "msesh: $sess — window $widx is waiting" \
+        "$labels — quiet, so probably done. Go to the '$sess' tab, then press $PREFIX $widx. The waiting block has a red border."
 done
