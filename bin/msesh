@@ -1229,6 +1229,11 @@ else
   PBASE=$("$TMUX_BIN" show-options -gwv pane-base-index 2>/dev/null || echo 0)
   case $PBASE in ''|*[!0-9]*) PBASE=0 ;; esac
 
+  # Whether the alert gets marked on screen as well as toasted. Read once here
+  # because both the per-window loop below and the session-wide block after it
+  # need it, and they are far enough apart to drift.
+  HIGHLIGHT=${MSESH_HIGHLIGHT:-1}
+
   for wname in "${WINDOWS[@]}"; do
     WIN="$SESSION:$wname"
     "$TMUX_BIN" set-window-option -t "$WIN" pane-border-status top >/dev/null
@@ -1247,6 +1252,24 @@ else
       # that first alert is swallowed; the notifier re-arms the window once you
       # have looked at it, and every alert after that is real.
       "$TMUX_BIN" set-window-option -t "$WIN" @msesh_notified 1 >/dev/null
+
+      # The status bar's mark for a waiting window. It has to be set here, on
+      # each window, and not once on the session: window-status-format is a
+      # *window* option, so `set-option -t SESSION` resolves the target to that
+      # session's current window and quietly styles only that one. Every window
+      # built after it — the whole point, since a window you are looking at
+      # never alerts — was left with the default format and never went red.
+      #
+      # tmux's own '~' silence flag comes from #F, which a status format that
+      # spells out '#I #W' — as this machine's does — drops on the floor, so
+      # the flag is put back explicitly. The comma inside the style is escaped
+      # or the format parser reads it as the end of the true branch.
+      if [ "$HIGHLIGHT" != 0 ]; then
+        # Nested #{?} rather than #{||:}: both evaluate the same, and this one
+        # cannot be misread when someone comes back to edit it.
+        "$TMUX_BIN" set-window-option -t "$WIN" window-status-format \
+          '#{?window_silence_flag,#[fg=colour196#,bold] #I #W !#[default],#{?window_bell_flag,#[fg=colour196#,bold] #I #W !#[default], #I #W }}' >/dev/null
+      fi
     fi
     "$TMUX_BIN" select-pane -t "$WIN.$PBASE"
   done
@@ -1287,19 +1310,14 @@ else
     #
     #   the tab      set-titles puts the alert in the Windows Terminal tab
     #                title, so an unfocused tab advertises itself
-    #   the status   the alerting window is marked in the status bar. tmux's
-    #                own '~' silence flag comes from #F, which a status format
-    #                that spells out '#I #W' — as this machine's does — drops
-    #                on the floor, so it is put back explicitly here
+    #   the status   the alerting window is marked in the status bar — set per
+    #                window in the loop above, because that option is a window
+    #                one and setting it here would only ever reach one window
     #   the block    msesh-notify colours the window's borders, above
     #
-    # Session-scoped, so nothing outside msesh's own sessions is restyled.
-    # Set MSESH_HIGHLIGHT=0 to leave all three alone.
-    if [ "${MSESH_HIGHLIGHT:-1}" != 0 ]; then
-      # Nested #{?} rather than #{||:}: both evaluate the same, and this one
-      # cannot be misread when someone comes back to edit it.
-      "$TMUX_BIN" set-option -t "$SESSION" window-status-format \
-        '#{?window_silence_flag,#[fg=colour196#,bold] #I #W !#[default],#{?window_bell_flag,#[fg=colour196#,bold] #I #W !#[default], #I #W }}' >/dev/null
+    # These two are genuinely session options, so nothing outside msesh's own
+    # sessions is restyled. Set MSESH_HIGHLIGHT=0 to leave all three alone.
+    if [ "$HIGHLIGHT" != 0 ]; then
       "$TMUX_BIN" set-option -t "$SESSION" set-titles on >/dev/null
       # session_alerts spells the alert type into the list — silence is '2~',
       # not '2' — and the number on its own is the key you press, so the
