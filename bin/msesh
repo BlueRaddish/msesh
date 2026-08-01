@@ -157,7 +157,7 @@ SESSION_SET=0
 
 DEFAULT_PRESET=${MSESH_DEFAULT_PRESET:-claude}
 
-MSESH_VERSION=0.4.0
+MSESH_VERSION=0.5.0
 
 # --- agents ------------------------------------------------------------------
 # Some panes hold an interactive coding agent rather than a shell, and two of
@@ -284,9 +284,9 @@ COMMANDS
   rebuild [SPECS]   kill this session and build it again from scratch
   add [SPECS]       add panes to a session that is already up
   attach [NAME]     attach to a session, restoring it first if it is down
-  restore [NAME]    rebuild a session from its manifest  (--all for every one)
+  restore [NAME]    rebuild a session as it was          (--all for every one)
   kill [NAME]       kill a session and everything in it  (--all for every one)
-  forget NAME       drop a session's manifest so it stops being restored
+  forget NAME       drop a recorded session so it stops being restored
   list              live sessions, layouts and recorded sessions
   preset ...        name a command one pane runs — 'msesh help preset'
   layout ...        name a whole session — 'msesh help layout'
