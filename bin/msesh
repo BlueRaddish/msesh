@@ -159,6 +159,14 @@ DEFAULT_PRESET=${MSESH_DEFAULT_PRESET:-claude}
 
 MSESH_VERSION=0.5.0
 
+# The manifest and layout file format, which moves independently of the tool's
+# own version and only when the meaning of a key changes. Written into every
+# file msesh saves and checked on the way back in: the first time this changes,
+# the difference between a migration and a puzzling failure is whether the old
+# files said what they were. Files written before 0.6.0 carry no version and
+# are read as 1, which is what they are.
+MSESH_FORMAT=1
+
 # --- agents ------------------------------------------------------------------
 # Some panes hold an interactive coding agent rather than a shell, and two of
 # msesh's behaviours are about that distinction: -e injects a reasoning-effort
@@ -856,6 +864,7 @@ manifest_save() {
   {
     echo "# msesh manifest for '$SESSION' — rewritten on every build"
     echo "# restore with: msesh restore $SESSION"
+    printf 'version=%s\n' "$MSESH_FORMAT"
     printf 'dir=%s\n'     "$WORKDIR"
     printf 'effort=%s\n'  "$EFFORTS_RAW"
     printf 'eager=%s\n'   "$EAGER"
@@ -891,6 +900,12 @@ conf_read() {
       notify) [ "$NOTIFY_SET" = 0 ] && NOTIFY_SILENCE=$val ;;
       spec)   SPECS+=("$val") ;;
       layout) ;;                       # marker only; see the layouts section
+      # Louder than a silent misreading, quieter than refusing to work: a
+      # newer msesh's file is likely still mostly readable, and saying which
+      # file and which version beats a build that comes out subtly wrong.
+      version)
+        [ "$val" = "$MSESH_FORMAT" ] ||
+          echo "msesh: $f is format $val, this msesh knows $MSESH_FORMAT — reading it anyway" >&2 ;;
     esac
   done < "$f"
   return 0
@@ -1024,6 +1039,7 @@ layout_save() {
   {
     echo "# msesh layout '$name' — a whole session, written on purpose"
     echo "# launch with: msesh build $name"
+    printf 'version=%s\n' "$MSESH_FORMAT"
     printf 'layout=1\n'
     printf 'dir=%s\n'    "$dir"
     printf 'effort=%s\n' "$effort"
