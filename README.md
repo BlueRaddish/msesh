@@ -85,6 +85,7 @@ Every command is a word, not a flag. `msesh help` lists them; `msesh help TOPIC`
 | `msesh list` | live sessions, layouts and recorded sessions |
 | `msesh status [NAME]` | what each pane is doing, and which window is waiting |
 | `msesh send NAME TEXT` | type TEXT into every agent pane of NAME (`--all` for every pane) |
+| `msesh hooks [SUB]` | `status`, `install` or `remove` the turn-end signal |
 | `msesh doctor` | check this machine: platform, tmux, terminal, notifier, PATH, files |
 | `msesh preset ...` | name one pane: `list`, `show NAME`, `make [NAME]`, `remove NAME`, `edit` |
 | `msesh layout ...` | name a whole session: `list`, `show`, `make`, `save`, `remove`, `edit` |
@@ -226,6 +227,28 @@ Genuinely Claude-specific behaviour stays under Claude-specific names: the `clau
 | `-n`, `--dry-run` | print the panes, commands and window split, then stop |
 | `--notify SECS` | toast after this much silence (default: 20, `0` = off) |
 | `--no-tab` | build the session without opening a terminal tab |
+
+## Knowing when an agent has finished
+
+By default msesh infers "this pane is waiting on you" from silence: a pane that has printed nothing for 20 seconds has, in practice, finished its turn. That is a guess, and it is late by the length of the timeout and wrong in both directions — an agent thinking quietly looks finished, and one printing steadily never alerts.
+
+Claude Code will simply tell you instead. `msesh hooks install` adds a `Stop` hook to `~/.claude/settings.json`, and from then on a pane reports the end of its turn the moment it happens:
+
+```console
+$ msesh hooks status
+settings:  /home/me/.claude/settings.json
+Stop hooks:  2 total, 1 msesh, 1 yours
+  msesh -> "/home/me/bin/msesh-notify" --turn-end
+
+$ msesh status work
+work:
+  window 2 (review)
+    1  claude/high            WAITING — turn ended
+```
+
+Silence monitoring stays as the fallback for panes that are not agents — a build, a test run, a REPL — where it was always the right signal.
+
+**That file is not msesh's**, and it commonly holds hooks you wrote. So `hooks install` is **append-only** (it never rewrites, reorders or drops an entry it did not create), every entry it writes is tagged `"_msesh": 1` so `hooks remove` takes exactly its own, it backs the file up to `settings.json.msesh-backup` first, it validates the JSON before replacing anything, and running it twice changes nothing the second time. `hooks status` is read-only and `--dry-run` prints the result without writing. An install followed by a remove leaves the file byte-identical.
 
 ## Checking before you build
 
