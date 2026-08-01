@@ -1,0 +1,51 @@
+name: test
+
+# msesh claims to run on Linux, macOS, Windows and WSL. That claim is only
+# worth anything if something checks it on a machine the author is not sitting
+# at — every portability bug in this repo's history was invisible from the
+# platform it was written on.
+#
+# The suite runs entirely behind `--dry-run`, so none of these jobs needs a
+# display, a terminal emulator, a notifier, or an agent installed. They need
+# bash and tmux and nothing else.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - run: tmux -V && bash --version | head -1
+      - run: ./test.sh
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install tmux
+      # Deliberately /bin/bash, not the runner's default shell: /bin/bash on
+      # macOS is bash 3.2 (2007, frozen by Apple over a licence change), and
+      # that is the bash a Mac user actually has. Running the suite under a
+      # Homebrew bash 4 would prove nothing about their machine.
+      - run: /bin/bash --version | head -1
+      - run: /bin/bash ./test.sh
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: tmux
+      - run: tmux -V && bash --version | head -1
+      - run: ./test.sh

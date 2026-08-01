@@ -182,6 +182,76 @@ printf 'version=99\nspec=1\nspec=bash\ndir=%s\n' "$HOME" > "$MSESH_STATE/future.
 check "a newer format warns"           "is format 99" -- restore future -n
 check "but is still read"              "1 pane(s)"    -- restore future -n
 
+# --- portability ---------------------------------------------------------------
+# These two guard the invariant the platform layer exists for. They are not
+# about behaviour, so they do not use `check`; they read the source.
+#
+# Without them the abstraction rots silently: someone adds a quick `cygpath`
+# call, it works on their machine, and the next person on a Mac finds out.
+echo "portability"
+
+port_fail() {
+  FAIL=$((FAIL + 1))
+  printf '  FAIL %s\n' "$1"
+  printf '%s\n' "$2" | sed 's/^/         /'
+}
+port_ok() { PASS=$((PASS + 1)); [ "$VERBOSE" = 1 ] && printf '  ok   %s\n' "$1"; return 0; }
+
+SRC=$(cd "$(dirname "$MSESH")" && pwd)
+
+# Comment lines are exempt: explaining *why* cmd.exe needs a handover is
+# exactly the kind of thing that should stay written next to the code, and a
+# test that forbids saying the word would push that knowledge out of the file.
+uncommented() { grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'; }
+
+# Executable names only — the help text is allowed to document MSESH_MSYS_ROOT
+# and WT_BIN, because those are real overrides the platform layer honours.
+leaks=$(grep -nE 'cygpath|wt\.exe|powershell|reg\.exe|cmd\.exe|/c/msys|md5sum' \
+        "$SRC/msesh" "$SRC/msesh-notify" 2>/dev/null | uncommented || true)
+if [ -n "$leaks" ]; then
+  port_fail "no platform binaries outside msesh-platform" "$leaks"
+else
+  port_ok "no platform binaries outside msesh-platform"
+fi
+
+# macOS ships bash 3.2 and Apple will not move. These are the constructs that
+# would break there, and they are easier to ban than to remember.
+b4=$(grep -nE 'mapfile|readarray|declare -A|local -n|\[-1\]|\$\{[A-Za-z_]+,,\}' \
+     "$SRC/msesh" "$SRC/msesh-notify" "$SRC/msesh-platform" 2>/dev/null \
+     | uncommented || true)
+if [ -n "$b4" ]; then
+  port_fail "nothing that needs bash 4" "$b4"
+else
+  port_ok "nothing that needs bash 4"
+fi
+
+# The platform layer must answer every question the rest of the script asks of
+# it; a missing function is a runtime error on one OS only, which is the worst
+# kind to find late.
+missing_fn=
+for fn in plat_os plat_is_windows plat_tmux plat_bootstrap plat_bootstrap_argv \
+          plat_open_tab plat_tab_opener plat_notify plat_notifier \
+          plat_native_path plat_config_home plat_checksum plat_path_check \
+          plat_path_hint plat_shell_presets; do
+  grep -q "^$fn()" "$SRC/msesh-platform" || missing_fn="$missing_fn $fn"
+done
+if [ -n "$missing_fn" ]; then
+  port_fail "platform layer is complete" "missing:$missing_fn"
+else
+  port_ok "platform layer is complete"
+fi
+
+# Exercised rather than assumed: each of the three OS branches must produce a
+# config path and a shell preset list without erroring, on whatever machine the
+# suite happens to be running on.
+for os in linux macos windows wsl; do
+  out=$(MSESH_OS=$os bash -c ". '$SRC/msesh-platform'; plat_config_home; echo; plat_shell_presets" 2>&1)
+  case $out in
+    */msesh*) port_ok "platform branch: $os" ;;
+    *)        port_fail "platform branch: $os" "$out" ;;
+  esac
+done
+
 echo "the version key is written"
 "$MSESH" layout make v 1 bash -d "$HOME" >/dev/null
 check "layouts carry a version"        "version=1"    -- layout show v
