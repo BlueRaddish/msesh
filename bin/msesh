@@ -299,6 +299,7 @@ COMMANDS
   kill [NAME]       kill a session and everything in it  (--all for every one)
   forget NAME       drop a recorded session so it stops being restored
   list              live sessions, layouts and recorded sessions
+  status [NAME]     what each pane is doing, and which window is waiting
   preset ...        name a command one pane runs — 'msesh help preset'
   layout ...        name a whole session — 'msesh help layout'
   help [TOPIC]      this page, or a topic below
@@ -629,7 +630,7 @@ help_topic() {
 # — the flag-per-action scheme this replaces — meant the difference between
 # building a session and destroying every session was one shifted keystroke
 # (-k / -K), and nothing on the command line said which you had asked for.
-COMMANDS="build rebuild add attach restore kill forget list preset layout help version"
+COMMANDS="build rebuild add attach restore kill forget list status preset layout help version"
 
 # Did-you-mean. A prefix match either way round is not enough on its own — it
 # gets 'lst' but not 'buld', and a dropped letter in the middle is the typo
@@ -680,6 +681,7 @@ case $CMD in
   kill)               ACTION=kill ;;
   forget)             ACTION=forget ;;
   list)               ACTION=list ;;
+  status)             ACTION=status ;;
   preset|presets)     ACTION=preset ;;
   layout|layouts)     ACTION=layout ;;
   -?*) usage_short >&2
@@ -749,7 +751,7 @@ take_session_name() {
   if [ "${#ARGS[@]}" -gt 1 ]; then
     die "$CMD takes one session name, got ${#ARGS[@]} arguments"
   fi
-  if [ "${#ARGS[@]}" = 1 ]; then SESSION=${ARGS[0]}; fi
+  if [ "${#ARGS[@]}" = 1 ]; then SESSION=${ARGS[0]}; SESSION_SET=1; fi
   return 0
 }
 
@@ -761,7 +763,7 @@ case $ACTION in
     else
       SPECS=(${ARGS[@]+"${ARGS[@]}"})
     fi ;;
-  kill)
+  kill|status)
     take_session_name ;;
   forget)
     if [ "${#ARGS[@]}" = 0 ] && [ "$ALL" = 0 ]; then
@@ -1281,6 +1283,58 @@ case $ACTION in
     done < <(manifest_names)
     [ "$found" = 1 ] || echo "  (none yet)"
     exit 0 ;;
+  status)
+    # What the toast and the highlight say, but from outside the session: you
+    # can ask this from any shell without attaching, which is the whole point.
+    #
+    # Silence is a window property in tmux — there is no per-pane flag — so
+    # "waiting" is reported per window, and the panes under it are listed so
+    # you know what is in the one that wants you. Whether a pane's command is
+    # still running is read from the foreground process: msesh appends
+    # 'exec bash -i' to keep a pane alive, so a pane showing a shell is one
+    # whose command has exited.
+    stat_sessions=()
+    if [ "$SESSION_SET" = 1 ]; then
+      session_exists "$SESSION" || die "no session '$SESSION' (msesh list)"
+      stat_sessions=("$SESSION")
+    else
+      while IFS= read -r s; do
+        [ -n "$s" ] || continue
+        [ "$("$TMUX_BIN" show-options -t "$s" -qv @msesh 2>/dev/null || true)" = 1 ] || continue
+        stat_sessions+=("$s")
+      done < <("$TMUX_BIN" list-sessions -F '#S' 2>/dev/null || true)
+    fi
+    if [ "${#stat_sessions[@]}" = 0 ]; then
+      echo "msesh: no msesh sessions running"
+      exit 0
+    fi
+    for s in "${stat_sessions[@]}"; do
+      echo "$s:"
+      lastwin=
+      while IFS='|' read -r widx wname wsil wbell pidx plabel pcmd pdead pdone; do
+        [ -n "$widx" ] || continue
+        if [ "$widx" != "$lastwin" ]; then
+          state=
+          [ "$wsil" = 1 ] && state=' — waiting'
+          [ "$wbell" = 1 ] && state=' — bell'
+          printf '  window %s (%s)%s\n' "$widx" "$wname" "$state"
+          lastwin=$widx
+        fi
+        # A dead pane means remain-on-exit was set by hand; msesh does not set
+        # it, but say so rather than reporting the corpse as idle.
+        if [ "$pdead" = 1 ]; then note=dead
+        elif [ "$pdone" = 1 ]; then note='finished — shell only'
+        # Deliberately not printing pcmd here: for a pane msesh built it is the
+        # wrapper shell whatever is actually running, so it would read as
+        # 'running (bash)' for a working claude pane and mislead.
+        else                       note='running'
+        fi
+        printf '    %-2s %-22s %s\n' "$pidx" "${plabel:-?}" "$note"
+      done < <("$TMUX_BIN" list-panes -s -t "=$s" \
+        -F '#{window_index}|#{window_name}|#{window_silence_flag}|#{window_bell_flag}|#{pane_index}|#{@label}|#{pane_current_command}|#{pane_dead}|#{@done}' \
+        2>/dev/null)
+    done
+    exit 0 ;;
   forget)
     f=$(manifest_of "$FORGET")
     if [ -e "$f" ]; then rm -f "$f"; echo "msesh: forgot '$FORGET'"
@@ -1734,7 +1788,15 @@ else
 
   # Keep the pane alive after its command exits, so a stray /exit or a crash
   # leaves you a shell in place instead of collapsing the layout.
-  pane_cmd() { printf '%s; exec bash -i' "$1"; }
+  #
+  # The @done stamp in the middle is what 'msesh status' reads. It has to be
+  # set by the pane itself: tmux reports pane_current_command as the process
+  # that owns the terminal's foreground group, which for 'CMD; exec bash -i'
+  # is the wrapper shell whether CMD is running or not — so asking tmux from
+  # outside cannot tell a working pane from a finished one. Setting an option
+  # on the way past can. -p with no target means "this pane", which the pane
+  # knows from $TMUX_PANE.
+  pane_cmd() { printf '%s; tmux set-option -p @done 1 2>/dev/null; exec bash -i' "$1"; }
 
   # Lazy panes get a bare shell and the command typed at the prompt, unrun.
   # send-keys lands in the pty's input buffer even before bash draws its first
