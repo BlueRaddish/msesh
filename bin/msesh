@@ -120,7 +120,7 @@ SESSION_SET=0
 # MSESH_DEFAULT_PRESET=claude restores the old behaviour for anyone who wants it.
 DEFAULT_PRESET=${MSESH_DEFAULT_PRESET:-shell}
 
-MSESH_VERSION=1.2.0
+MSESH_VERSION=1.3.0
 
 # The manifest and layout file format, which moves independently of the tool's
 # own version and only when the meaning of a key changes. Written into every
@@ -362,7 +362,9 @@ OPTIONS — all of them. Only build, rebuild and add use the pane ones.
                          appears in the status bar, in the tab title when that
                          window is waiting, and in its toast
         --lazy           pre-type agent panes' commands without running them,
-                         so you press Enter in the ones you actually want
+                         so you press Enter in the ones you actually want.
+                         This is already the default unless you pass -e
+        --eager          start agent panes straight away, without -e
 
   Notifications
         --notify SECS    toast when a pane has produced no output for SECS
@@ -424,7 +426,8 @@ review'. More than one makes a layout — a whole named session, built with
 'msesh build NAME'. 'msesh help layout' is the rest of that story, including
 how to write one without being asked any questions.
 
-Built in: claude, cly, plan, safe, bash/sh, pwsh/ps, cmd.
+Built in: shell, then the shells this machine has, then the agents installed
+on it. All of them are the bare command — flags are yours to add.
 
 Your own live in
   $presets
@@ -486,44 +489,63 @@ EOF
 # Printed from the table itself rather than written out, so a registration
 # added in agents.conf shows up here without anyone remembering to say so.
 help_agents() {
-  local file=${MSESH_AGENTS:-$(plat_config_home)/agents.conf} i flag levels
+  local file=${MSESH_AGENTS:-$(plat_config_home)/agents.conf} i flag levels cmd
   cat <<EOF
-AGENTS — the pane commands msesh treats as an interactive assistant rather
-than a shell. Two things follow from being one:
+AGENTS — pane commands msesh treats as an assistant rather than a shell.
 
-  -e       injects that agent's effort flag, spelled its way
-  --lazy   pre-types the pane instead of running it, since these are the
-           commands that are slow and expensive to start
+Being one changes two things:
 
-A pane is matched on the command it runs, so 'review = claude ... /code-review'
-and 'yolo = codex --full-auto' are recognised without being listed.
+  -e         msesh adds that agent's own effort flag for you, so you can say
+             '-e high' instead of remembering how each one spells it. It
+             replaces whatever effort the preset would have used; a preset
+             that already names an effort is left alone.
+  --lazy     the pane opens with the command typed but NOT run, so nothing
+             starts until you press Enter. This is the default for agent
+             panes unless you pass -e; agents are slow and expensive to
+             start, so msesh does not start four of them because you asked
+             for four panes. --eager starts them anyway.
 
 EOF
-  printf '  %-10s %-28s %s\n' AGENT 'EFFORT FLAG' 'LEVELS'
+  printf '  +------------+----------------------+------------------------------+------------------------------+
+'
+  printf '  | %-10s | %-20s | %-28s | %-28s |
+' AGENT COMMAND 'EFFORT FLAG' LEVELS
+  printf '  +------------+----------------------+------------------------------+------------------------------+
+'
   for i in "${!AGENT_NAMES[@]}"; do
     flag=${AGENT_EFFORT[$i]}; levels=${AGENT_LEVELS[$i]}
+    # Resolved directly, not through preset_get: help is dispatched before the
+    # presets are registered, so asking them would report everything missing.
+    if [ "${AGENT_NAMES[$i]}" = claude ] && [ -n "${CLAUDE_BIN:-}" ]; then
+      cmd=$CLAUDE_BIN
+    else
+      cmd=$(command -v "${AGENT_NAMES[$i]}" 2>/dev/null || true)
+    fi
+    [ -n "$cmd" ] || cmd='(not installed)'
     [ -n "$flag" ]   || flag='(none)'
-    [ -n "$levels" ] || levels='—'
-    printf '  %-10s %-28s %s\n' "${AGENT_NAMES[$i]}" "$flag" "${levels//,/, }"
+    [ -n "$levels" ] || levels='-'
+    printf '  | %-10s | %-20.20s | %-28.28s | %-28.28s |
+'       "${AGENT_NAMES[$i]}" "$cmd" "$flag" "${levels//,/, }"
   done
+  printf '  +------------+----------------------+------------------------------+------------------------------+
+'
   cat <<EOF
 
-An agent with no effort flag is left out of -e rather than made an error, so a
-session mixing one with claude still takes a single -e. Asking for a level an
-agent does not have is an error naming both, because running at some other
-effort than the one you asked for is worse than not starting.
+A pane is an agent pane if the command it runs is one of the above, so
+'review = claude /code-review' counts without being listed.
 
-Add your own in
+An agent with no effort flag is skipped by -e. A level it does not have is an
+error, naming both.
+
+Teach msesh another one in
   $file
-as 'name = flag | levels', where the flag carries its own separator:
+as 'name = flag | levels'. The flag carries its own separator:
 
   myagent    = --reasoning | quick,deep
   otheragent =                              (no effort setting)
-
-Only these two facts are per-agent. Everything else msesh does — panes,
-windows, alerts, layouts — is the same whatever is running in the pane.
 EOF
 }
+
 
 help_hooks() {
   cat <<EOF
@@ -581,45 +603,6 @@ EOF
 
 # Printed from the table itself rather than written out, so a registration
 # added in agents.conf shows up here without anyone remembering to say so.
-help_agents() {
-  local file=${MSESH_AGENTS:-$(plat_config_home)/agents.conf} i flag levels
-  cat <<EOF
-AGENTS — the pane commands msesh treats as an interactive assistant rather
-than a shell. Two things follow from being one:
-
-  -e       injects that agent's effort flag, spelled its way
-  --lazy   pre-types the pane instead of running it, since these are the
-           commands that are slow and expensive to start
-
-A pane is matched on the command it runs, so 'review = claude ... /code-review'
-and 'yolo = codex --full-auto' are recognised without being listed.
-
-EOF
-  printf '  %-10s %-28s %s\n' AGENT 'EFFORT FLAG' 'LEVELS'
-  for i in "${!AGENT_NAMES[@]}"; do
-    flag=${AGENT_EFFORT[$i]}; levels=${AGENT_LEVELS[$i]}
-    [ -n "$flag" ]   || flag='(none)'
-    [ -n "$levels" ] || levels='—'
-    printf '  %-10s %-28s %s\n' "${AGENT_NAMES[$i]}" "$flag" "${levels//,/, }"
-  done
-  cat <<EOF
-
-An agent with no effort flag is left out of -e rather than made an error, so a
-session mixing one with claude still takes a single -e. Asking for a level an
-agent does not have is an error naming both, because running at some other
-effort than the one you asked for is worse than not starting.
-
-Add your own in
-  $file
-as 'name = flag | levels', where the flag carries its own separator:
-
-  myagent    = --reasoning | quick,deep
-  otheragent =                              (no effort setting)
-
-Only these two facts are per-agent. Everything else msesh does — panes,
-windows, alerts, layouts — is the same whatever is running in the pane.
-EOF
-}
 
 help_hooks() {
   cat <<EOF
@@ -805,6 +788,7 @@ while [ $# -gt 0 ]; do
     --windows=*)  WINDOW_NAMES=${arg#*=}; WINDOWS_SET=1 ;;
     --windows)    WINDOW_NAMES=${1:?--windows needs a value}; shift; WINDOWS_SET=1 ;;
     --lazy)       EAGER=0; EAGER_SET=1 ;;
+    --eager|--now) EAGER=1; EAGER_SET=1 ;;
     --ephemeral)  EPHEMERAL=1 ;;
     --no-tab)     OPEN_TAB=0 ;;
     --no-trust)   PRESEED_TRUST=0 ;;
@@ -912,7 +896,10 @@ session_exists() { "$TMUX_BIN" has-session -t "=$1" 2>/dev/null; }
 # aliases in interactive shells, while tmux runs pane commands through a
 # non-interactive one.
 CLAUDE_BIN=${CLAUDE_BIN:-$(command -v claude || echo claude)}
-CLAUDE_FLAGS=${CLAUDE_FLAGS:---remote-control --dangerously-skip-permissions}
+# Empty by default. This used to carry --remote-control and
+# --dangerously-skip-permissions, which meant every claude pane msesh started
+# had permission prompts turned off without saying so.
+CLAUDE_FLAGS=${CLAUDE_FLAGS:-}
 
 PRESET_NAMES=()
 PRESET_CMDS=()
@@ -933,32 +920,49 @@ preset_get() {
   return 1
 }
 
-preset_set claude "$CLAUDE_BIN $CLAUDE_FLAGS"
-preset_set cly    "$CLAUDE_BIN $CLAUDE_FLAGS"
-preset_set plan   "$CLAUDE_BIN --remote-control --permission-mode plan"
-preset_set safe   "$CLAUDE_BIN --remote-control"
 # The shell a pane gets when nothing else was asked for: yours, not msesh's
 # idea of one. tmux's own default-shell first, because that is what tmux would
 # have started and it already honours the user's tmux.conf; then $SHELL; then
-# whatever exists. Used both for the `shell` preset and as the thing a pane
-# falls back to when its command exits.
+# whatever exists. Used for the `shell` preset and as the thing a pane falls
+# back to when its command exits.
 PANE_SHELL=$("$TMUX_BIN" show-options -gv default-shell 2>/dev/null || true)
 if [ -z "$PANE_SHELL" ] || [ ! -x "$PANE_SHELL" ]; then PANE_SHELL=${SHELL:-}; fi
 if [ -z "$PANE_SHELL" ] || [ ! -x "$PANE_SHELL" ]; then
   PANE_SHELL=$(command -v bash || command -v sh || echo /bin/sh)
 fi
+
+# --- built-in presets ---------------------------------------------------------
+# Ordered by how ordinary they are, because that is the order they are listed
+# in and the order someone reads them: a shell first, the shells you actually
+# have next, agents last. Agents are the reason msesh exists, but they are the
+# specialised end of the list, not the front of it.
+#
+# Every one of these is the bare command. A preset that quietly added flags —
+# and the claude preset used to add --dangerously-skip-permissions — is a
+# preset that does something you did not ask for and cannot see. Flags are
+# yours to add, either in presets.conf or through CLAUDE_FLAGS.
 preset_set shell "$PANE_SHELL -i"
 
-# Shell presets come from the platform layer, which offers only the shells this
-# machine actually has. A preset list advertising cmd.exe on Linux is lying
-# about the machine, and 'msesh build 2 cmd' failing at the pane is a worse way
-# to find out than it never having been offered.
+# The shells this machine actually has; a preset list offering cmd.exe on Linux
+# is lying about the machine.
 while IFS== read -r _pname _pcmd; do
   [ -n "$_pname" ] && preset_set "$_pname" "$_pcmd"
 done <<EOF
 $(plat_shell_presets)
 EOF
 unset _pname _pcmd
+
+# Agents, from the same table that knows how to spell their effort flags —
+# rather than a second hand-written list that could disagree with it. Only the
+# ones installed here, on the same reasoning as the shells.
+for _a in ${AGENT_NAMES[@]+"${AGENT_NAMES[@]}"}; do
+  if [ "$_a" = claude ] && [ -n "${CLAUDE_BIN:-}" ] && [ -x "$CLAUDE_BIN" ]; then
+    preset_set claude "$CLAUDE_BIN${CLAUDE_FLAGS:+ $CLAUDE_FLAGS}"
+  elif command -v "$_a" >/dev/null 2>&1; then
+    preset_set "$_a" "$_a"
+  fi
+done
+unset _a
 
 PRESET_FILE=${MSESH_PRESETS:-$(plat_config_home)/presets.conf}
 if [ -r "$PRESET_FILE" ]; then
@@ -1946,6 +1950,13 @@ elif [ "${#SPECS[@]}" -eq 0 ] && ! session_exists "$SESSION"; then
   fi
 fi
 
+# Agent panes are lazy unless you said something. Asking for four panes should
+# not start four agents: they are slow, they cost money, and half of them are
+# usually there to be used later. Naming an effort with -e is taken as "yes, I
+# mean it" — as is --eager. Shell panes are unaffected; --lazy only ever
+# applied to agents.
+if [ "$EAGER_SET" = 0 ] && [ -z "$EFFORTS_RAW" ]; then EAGER=0; fi
+
 [ -d "$WORKDIR" ] || die "no such directory: $WORKDIR"
 case $PANES_PER_WINDOW in ''|*[!0-9]*) die "--width needs a number, got '$PANES_PER_WINDOW'" ;; esac
 case $NOTIFY_SILENCE in ''|*[!0-9]*) die "--notify needs seconds, got '$NOTIFY_SILENCE'" ;; esac
@@ -1969,7 +1980,14 @@ add_panes() {
           if layout_exists "$name"; then
             die "'$name' is a layout — a whole session, so build it on its own: msesh build $name"
           fi
-          cmd=$(preset_get "$name") || die "unknown preset '$name' (msesh preset list)"
+          if ! cmd=$(preset_get "$name"); then
+            # A known agent that is not installed is a different problem from a
+            # name nobody has heard of, and saying so saves a hunt.
+            if agent_field "$name" levels >/dev/null 2>&1; then
+              die "'$name' is a known agent but is not on PATH — install it, or point a preset at it"
+            fi
+            die "unknown preset '$name' (msesh preset list)"
+          fi
           label=$name ;;
   esac
   local n=0
@@ -2118,7 +2136,7 @@ if [ "$DRY_RUN" = 1 ]; then
   # The settings that are not visible in the pane list but change what you get.
   printf '  %s window(s), %s pane(s) per window' "$dwin" \
     "$([ "$PANES_PER_WINDOW" = 0 ] && echo all || echo "$PANES_PER_WINDOW")"
-  [ "$EAGER" = 0 ] && printf ', agent panes pre-typed only'
+  [ "$EAGER" = 0 ] && [ "$HAS_AGENT" = 1 ] && printf ', agent panes pre-typed only'
   if [ "$NOTIFY_SILENCE" = 0 ]; then printf ', no toast'
   else printf ', toast after %ss of silence' "$NOTIFY_SILENCE"; fi
   [ "$EPHEMERAL" = 1 ] && printf ', dies with the tab'

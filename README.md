@@ -110,7 +110,7 @@ With no spec you get one pane of the default preset, which is a plain shell — 
 
 ## Presets
 
-Built in: `claude`, `cly`, `plan`, `safe`, `bash`/`sh`, `pwsh`/`ps`, `cmd`. Your own go in `~/.config/msesh/presets.conf` as `name = command` lines and override the built-ins by name — see [`presets.conf.example`](presets.conf.example), or run `msesh preset list` to see what is currently defined.
+Built in, in the order `msesh preset list` shows them: `shell` (your shell), then the shells this machine has (`bash`, `sh`, `zsh`, `fish`, `pwsh`, `cmd` — whichever exist), then the agents that are installed (`claude`, `codex`, `gemini`, `aider`). Agents come last because they are the specialised end of the list, not the front of it. Your own go in `~/.config/msesh/presets.conf` as `name = command` lines and override the built-ins by name — see [`presets.conf.example`](presets.conf.example), or run `msesh preset list` to see what is currently defined.
 
 A preset whose command runs a known **agent** — `claude`, `codex`, whatever else you have registered — is treated as an agent pane: it gets that agent's effort flag injected when you pass `-e`, and it is what `--lazy` leaves pre-typed instead of started. See [Agents](#agents).
 
@@ -332,11 +332,19 @@ Everything machine-specific is an environment variable, so msesh should work on 
 
 `msesh help env` lists the lot.
 
-## A warning about the default flags
+## A note on flags
 
-The built-in `claude` preset runs with `--dangerously-skip-permissions`, which turns off Claude Code's permission prompts entirely. That is a deliberate choice for a trusted personal machine and a bad one anywhere else. Use the `safe` or `plan` presets, or set `CLAUDE_FLAGS`, if you would rather not.
+Every built-in preset is the **bare command** — `claude` runs `claude`, nothing more. An earlier version added `--dangerously-skip-permissions` to the `claude` preset, which meant msesh turned off permission prompts without saying so. Flags are yours to add:
 
-Note also that msesh pre-seeds Claude Code's workspace-trust record for the working directory so panes do not each stop on a trust dialog. `--no-trust` skips that.
+```
+claude = claude --permission-mode plan
+yolo   = claude --dangerously-skip-permissions
+review = claude /code-review
+```
+
+`CLAUDE_FLAGS` appends to the built-in `claude` preset if you would rather set it once in your environment.
+
+msesh still pre-seeds Claude Code's workspace-trust record for the working directory so panes do not each stop on a trust dialog. `--no-trust` skips that.
 
 ## License
 
