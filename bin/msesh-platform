@@ -331,11 +331,22 @@ plat_native_path() {
   fi
 }
 
-# Where config lives. XDG when it is set, ~/.config otherwise — including on
-# macOS, deliberately: msesh has always used ~/.config/msesh, that path is valid
-# on all three platforms, and honouring XDG when present is the portable-CLI
-# convention. Nothing existing needs migrating.
+# Where everything msesh owns lives: presets, agents, layouts, manifests.
+#
+# One knob. MSESH_HOME points at a directory and the whole of msesh's state is
+# under it — that is the only path anyone should have to set, and pointing it
+# at a synced folder is how you take your presets and layouts to another
+# machine. The four fine-grained overrides (MSESH_PRESETS, MSESH_AGENTS,
+# MSESH_LAYOUTS, MSESH_STATE) still work and still win, but nobody should need
+# them; they exist for the odd case of wanting manifests on local disk while
+# presets sync.
+#
+# The default is where a shell tool is supposed to put things: XDG when it is
+# set, ~/.config otherwise — including on macOS, deliberately. msesh has always
+# used ~/.config/msesh, that path is valid on all three platforms, and honouring
+# XDG when present is the portable-CLI convention. Nothing existing moves.
 plat_config_home() {
+  if [ -n "${MSESH_HOME:-}" ]; then printf '%s' "${MSESH_HOME%/}"; return 0; fi
   printf '%s/msesh' "${XDG_CONFIG_HOME:-$HOME/.config}"
 }
 

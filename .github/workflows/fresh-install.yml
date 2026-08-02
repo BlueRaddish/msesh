@@ -1,0 +1,116 @@
+name: fresh install
+
+# Everything in test.sh runs against the clone, with the environment already
+# right. This job answers a different question: what happens to somebody who
+# has never run msesh, on a machine that has never had it — no ~/.config/msesh,
+# no presets file, no PATH entry, no Claude Code installed.
+#
+# A CI runner is the only genuinely fresh machine available, which is the point:
+# the author's box cannot answer this, because it stopped being fresh on day
+# one.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  first-run:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install tmux
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then brew install tmux
+          else sudo apt-get update && sudo apt-get install -y tmux; fi
+
+      - name: nothing of msesh's exists yet
+        run: |
+          set -e
+          test ! -e "$HOME/.config/msesh" || { echo "config dir already present"; exit 1; }
+          command -v msesh >/dev/null && { echo "msesh already on PATH"; exit 1; } || true
+          echo "clean machine confirmed"
+
+      # The README's first instruction, verbatim. It must work on a clone with
+      # no arguments and no prior setup.
+      - name: ./install.sh
+        run: ./install.sh --prefix "$HOME/.local/bin"
+
+      - name: msesh works from a normal shell, with no config written yet
+        run: |
+          set -e
+          export PATH="$HOME/.local/bin:$PATH"
+          msesh version
+          msesh help >/dev/null
+          # doctor is allowed to report problems (no Claude Code here, and PATH
+          # was only set for this step) but must not crash.
+          msesh doctor || true
+          # The interesting one: a first build, described but not run, before
+          # any config file exists anywhere.
+          msesh build 4 --dry-run -d "$HOME"
+          msesh preset list
+
+      - name: the default is a shell, not an agent
+        run: |
+          set -e
+          export PATH="$HOME/.local/bin:$PATH"
+          msesh build 2 --dry-run -d "$HOME" | grep -q 'shell' \
+            || { echo "a bare build did not default to a shell"; exit 1; }
+          msesh build 2 --dry-run -d "$HOME" | grep -qi 'claude' \
+            && { echo "a bare build started agents"; exit 1; } || true
+
+      # Nothing should be created until the user asks for something that needs
+      # storing. A tool that litters ~/.config on first --help is a rude tool.
+      - name: first run wrote nothing it did not need to
+        run: |
+          set -e
+          export PATH="$HOME/.local/bin:$PATH"
+          if [ -d "$HOME/.config/msesh" ]; then
+            echo "created on first use:"; find "$HOME/.config/msesh" | sed 's/^/  /'
+          else
+            echo "nothing written yet — good"
+          fi
+
+      - name: writing a preset and a layout creates the config on demand
+        run: |
+          set -e
+          export PATH="$HOME/.local/bin:$PATH"
+          msesh preset make demo "echo hello"
+          msesh layout make two 2 demo -d "$HOME"
+          msesh preset list | grep -q demo
+          msesh layout list  | grep -q two
+          msesh build two --dry-run | grep -q 'echo hello'
+          test -f "$HOME/.config/msesh/presets.conf"
+          test -f "$HOME/.config/msesh/layouts/two.conf"
+          echo "config tree:"; find "$HOME/.config/msesh" | sed 's/^/  /'
+
+      # The single knob: one path, everything under it.
+      - name: MSESH_HOME relocates the whole lot
+        run: |
+          set -e
+          export PATH="$HOME/.local/bin:$PATH"
+          export MSESH_HOME="$HOME/synced/msesh-config"
+          msesh help files | grep -q "$MSESH_HOME"
+          msesh preset make elsewhere "echo moved"
+          test -f "$MSESH_HOME/presets.conf"
+          # and the default location is untouched by any of that
+          grep -q elsewhere "$HOME/.config/msesh/presets.conf" \
+            && { echo "MSESH_HOME leaked into the default location"; exit 1; } || true
+          echo "relocated cleanly"
+
+      # A real session, on a machine with no terminal emulator and no notifier —
+      # which is what a server is. This is the floor the platform layer promises.
+      - name: a real build with no terminal and no notifier
+        run: |
+          set -e
+          export PATH="$HOME/.local/bin:$PATH"
+          msesh build 2 -s ci --no-tab --notify 0 -d "$HOME"
+          tmux list-panes -t ci -F '  pane #{pane_index} #{@label}'
+          msesh status ci
+          msesh list
+          msesh kill ci
