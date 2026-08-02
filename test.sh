@@ -237,7 +237,12 @@ fi
 # there arrives mode 644 on Linux and macOS and `./install.sh` answers
 # "permission denied" — which is invisible from the machine that committed it.
 # This repo shipped that bug from its first commit until CI existed.
-if command -v git >/dev/null 2>&1 && [ -d "$SRC/../.git" ]; then
+#
+# Asked of git rather than by looking for a .git directory: in a linked
+# worktree .git is a *file*, so the directory test quietly skipped this guard
+# in exactly the checkouts where work happens.
+if command -v git >/dev/null 2>&1 &&
+   git -C "$SRC/.." rev-parse --git-dir >/dev/null 2>&1; then
   notexec=$(cd "$SRC/.." && git ls-files -s bin/msesh bin/msesh-notify \
               install.sh test.sh 2>/dev/null | grep -v '^100755' || true)
   if [ -n "$notexec" ]; then
@@ -320,12 +325,101 @@ for t in "" specs options preset layout agents hooks files env; do
   esac
 done
 
+for t in "" specs options preset layout agents hooks files env; do
+  out=$("$MSESH" help $t 2>/dev/null)
+  label=${t:-main}
+
+  # L6: a description is a label, not a sentence — lowercase, no full stop.
+  # Only two-column rows are descriptions, so a row is a left token of at most
+  # 28 characters, then a gutter of two or more spaces, then the description.
+  # Prose paragraphs are single-spaced and never match; the agents table is
+  # skipped by its border characters.
+  bad=$(printf '%s\n' "$out" | awk '
+    /^[ ]*[|+]/ { next }                      # the agents table, not a row
+    /^[ ]*\$ / { next }                       # an example, not a row
+    {
+      n = split($0, f, /[ ][ ]+/)
+      if (n < 3 || f[1] != "") next           # needs indent, token, description
+      if (length(f[2]) > 28) next             # a long left side is prose
+      d = f[3]
+      # A capitalised word is a sentence opener. A placeholder (N, PRESET) and
+      # a path (C:/…) are neither, so the test is for capital-then-lowercase.
+      if (d ~ /^[A-Z][a-z]/ || d ~ /\.$/) print NR": "d
+    }')
+  [ -z "$bad" ] && port_ok "L6 '$label' descriptions are labels"           || port_fail "L6 '$label' descriptions are labels" "$bad"
+
+  # L8: one placeholder style — UPPER, with POSIX brackets for what is
+  # optional. An angled placeholder is a second style, which is the mix the
+  # rule exists to forbid.
+  case $out in
+    *'<'[a-zA-Z]*'>'*) port_fail "L8 '$label' has one placeholder style" "found an angled placeholder" ;;
+    *) port_ok "L8 '$label' has one placeholder style" ;;
+  esac
+done
+
 # L4: asking for help is not an error, so nothing goes to stderr.
 err=$("$MSESH" help 2>&1 >/dev/null)
 [ -z "$err" ] && port_ok "L4 help writes nothing to stderr"               || port_fail "L4 help writes nothing to stderr" "$err"
 
 # L3: and it succeeds.
 "$MSESH" help >/dev/null 2>&1 && port_ok "L3 help exits 0"                               || port_fail "L3 help exits 0" "non-zero exit"
+
+# L12: what help documents and what the parser accepts must be the same set.
+# This is the rule that would have caught --dry-run and --windows missing from
+# the summary line for three releases, and --now and --no-enter never being
+# documented at all. Both directions fail: a documented flag that the parser
+# rejects is a lie, an accepted flag nobody documents is unsupported.
+# Read off the case *patterns*, not the first flag on each line: --eager|--now
+# and ''|help|--help|-h are both single branches naming more than one spelling,
+# and taking only the first would report the others as undocumented.
+parser_flags=$(grep -oE '^[[:space:]]*[^();|&]*(\|[^();|&]*)*\)' "$SRC/msesh" |
+               grep -oE '\-\-[a-z][a-z-]*' | sort -u)
+doc_flags=$( { "$MSESH" help options; "$MSESH" help; } 2>/dev/null |
+             grep -oE '\-\-[a-z][a-z-]*' | sort -u)
+
+undocumented=$(comm -23 <(printf '%s\n' "$parser_flags") <(printf '%s\n' "$doc_flags"))
+[ -z "$undocumented" ] && port_ok "L12 every flag the parser takes is documented" \
+  || port_fail "L12 every flag the parser takes is documented" "$undocumented"
+
+invented=$(comm -13 <(printf '%s\n' "$parser_flags") <(printf '%s\n' "$doc_flags"))
+[ -z "$invented" ] && port_ok "L12 every documented flag is real" \
+  || port_fail "L12 every documented flag is real" "$invented"
+
+# L13: the examples are the part people copy, so they have to still parse.
+# Each is run against the scratch config with --dry-run forced, which exercises
+# the whole argument path without building anything. Examples that are not
+# msesh commands, or that would write outside the sandbox, are skipped by name.
+ex_run=0 ex_bad=
+while IFS= read -r ex; do
+  case $ex in
+    *'hooks install'*|*'hooks remove'*) continue ;;   # writes settings.json
+    *' edit'*) continue ;;                            # opens $EDITOR
+  esac
+  eval "set -- $ex" 2>/dev/null || { ex_bad="$ex_bad
+  $ex -> does not even parse as a command line"; continue; }
+  shift                                               # drop the leading 'msesh'
+  case ${1:-} in
+    build|rebuild|add|attach|restore) set -- "$@" --dry-run ;;
+  esac
+  # stdin from /dev/null: 'preset make' with nothing to go on asks questions,
+  # and a test that waits for an answer never finishes.
+  out=$("$MSESH" "$@" </dev/null 2>&1); rc=$?
+  ex_run=$((ex_run + 1))
+  case $out in
+    *'unknown option'*|*'no help topic'*|*'unknown preset'*)
+      ex_bad="$ex_bad
+  \$ $ex
+    $out" ;;
+    *) [ "$rc" -le 1 ] || ex_bad="$ex_bad
+  \$ $ex -> rc=$rc" ;;
+  esac
+done <<EOF
+$(for t in "" specs options preset layout agents hooks files env; do
+    "$MSESH" help $t 2>/dev/null
+  done | sed -n 's/^[[:space:]]*\$ \(msesh .*\)$/\1/p' | awk '!seen[\$0]++')
+EOF
+[ -z "$ex_bad" ] && port_ok "L13 all $ex_run help examples still parse" \
+  || port_fail "L13 all $ex_run help examples still parse" "$ex_bad"
 
 # L11 and the required sections of the root screen.
 for want in NAME USAGE DESCRIPTION EXAMPLES COMMANDS OPTIONS "EXIT STATUS"             "SEE ALSO" "REPORT BUGS" "github.com"; do

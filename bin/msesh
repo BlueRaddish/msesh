@@ -241,7 +241,7 @@ die() { echo "msesh: $*" >&2; exit 1; }
 
 usage_short() {
   cat <<EOF
-usage: msesh <command> [options] [specs]
+usage: msesh COMMAND [OPTIONS] [SPEC...]
 
   \$ msesh build 4              four shells in a new tab
   \$ msesh build 4 claude       four claude panes instead
@@ -257,8 +257,8 @@ NAME
   shell, or any command you name
 
 USAGE
-  msesh <command> [options] [specs]
-  msesh build [options] [SPECS...]
+  msesh COMMAND [OPTIONS] [SPEC...]
+  msesh build [OPTIONS] [SPEC...]
   msesh help [TOPIC]
 
 DESCRIPTION
@@ -285,9 +285,9 @@ EXAMPLES
 
 COMMANDS
   Building
-    build [SPECS]     build a session, or attach if it is already up
-    rebuild [SPECS]   kill this session and build it again
-    add [SPECS]       add panes to a session already up
+    build [SPEC...]   build a session, or attach if it is already up
+    rebuild [SPEC...] kill this session and build it again
+    add [SPEC...]     add panes to a session already up
     attach [NAME]     attach, restoring the session first if it is down
 
   Keeping
@@ -297,16 +297,16 @@ COMMANDS
     list              live sessions, layouts, recorded sessions
 
   Naming
-    preset ...        name a command one pane runs
-    layout ...        name a whole session
+    preset SUBCMD     name a command one pane runs
+    layout SUBCMD     name a whole session
 
   Checking
     status [NAME]     what each pane is doing, and which is waiting
     doctor            check this machine
     send NAME TEXT    type TEXT into every agent pane
-    hooks [SUB]       the turn-end signal from an agent
+    hooks SUBCMD      the turn-end signal from an agent
 
-  Run 'msesh help <topic>' for detail on any of these.
+  Run 'msesh help TOPIC' for detail on any of these.
 
 OPTIONS
   The four you will type most; 'msesh help options' has the rest.
@@ -391,7 +391,7 @@ NAME
   msesh options — every option, grouped
 
 USAGE
-  msesh <COMMAND> [OPTIONS] [SPEC...]
+  msesh COMMAND [OPTIONS] [SPEC...]
 
 DESCRIPTION
   Only build, rebuild and add read the pane options. A restored session takes
@@ -422,7 +422,7 @@ OPTIONS
     -w, --width N        max panes per window before spilling (default: 4)
         --windows LIST   name the windows this build creates, in order
         --lazy           pre-type agent panes without running them (default)
-        --eager          start agent panes straight away
+        --eager          start agent panes straight away (--now is a synonym)
 
   Notifications
         --notify SECS    toast after SECS of pane silence (default: 20, 0=off)
@@ -431,20 +431,24 @@ OPTIONS
   Other
         --all            restore or kill every known session, not just one
         --no-trust       skip the workspace-trust pre-seed
+        --no-enter       with send: type the text without pressing Enter
     -h, --help           show this help
         --version        show the version
 
-  Notes on the ones that carry a rule with them:
+  Four of those carry a rule with them.
 
-    -e         l/m/h/x expand to low/medium/high/xhigh, and 'ladder' means
-               low,medium,high. The last level repeats for panes left over.
-               An agent with no effort setting is skipped; a level its agent
-               does not have is an error naming both.
-    -w 0       puts every pane in one window, however small it gets.
-    --windows  names run out silently — anything past the end falls back to
-               m1, m2, … A name shows in the status bar, in the tab title
-               when that window waits, and in its toast.
-    --no-tab   this is what 'restore --all' uses from a logon task.
+  With -e, the letters l/m/h/x expand to low/medium/high/xhigh and 'ladder'
+  means low,medium,high; the last level repeats for any panes left over. An
+  agent with no effort setting is skipped rather than given one, and a level
+  its agent does not have is an error naming both.
+
+  With -w 0, every pane goes in one window however small it gets.
+
+  With --windows, names run out silently: anything past the end falls back to
+  m1, m2, … A name shows in the status bar, in the tab title when that window
+  is waiting, and in its toast.
+
+  --no-tab is what 'restore --all' uses when it runs from a logon task.
 
   Silence is the fallback signal. Run 'msesh hooks install' and agent panes
   report the end of a turn themselves; these options then govern only the
@@ -776,9 +780,9 @@ ENVIRONMENT
   MSESH_OS              override platform detection (linux/macos/windows/wsl)
   TMUX_BIN              tmux
   TERMINAL              honoured on Linux, as the usual convention
-  MSESH_MSYS_ROOT       Windows: an MSYS2 install root, if it is unusual
-  WT_BIN                Windows: the Terminal binary
-  WT_PROFILE            Windows: the profile a new tab uses
+  MSESH_MSYS_ROOT       on Windows, an MSYS2 install root, if it is unusual
+  WT_BIN                on Windows, the Terminal binary
+  WT_PROFILE            on Windows, the profile a new tab uses
 
 SEE ALSO
   msesh help files      the paths these variables override
