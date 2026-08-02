@@ -5,7 +5,8 @@ Multi-session management for [Claude Code](https://claude.ai/code) and other cod
 Runs on **Linux, macOS, Windows (MSYS2) and WSL** — tested on all three in CI, including under macOS's stock bash 3.2.
 
 ```console
-$ msesh build 4                        # four Claude panes, tiled, in a new tab
+$ msesh build 4                        # four shells, tiled, in a new tab
+$ msesh build 4 claude                 # four Claude panes instead
 $ msesh build 3 claude +pwsh -s work   # three Claude panes and a shell, named 'work'
 $ msesh build 3 claude -e ladder       # panes at low, medium and high effort
 $ msesh layout make quad 4 claude -e l,m,h,x   # name that whole session
@@ -89,7 +90,7 @@ Every command is a word, not a flag. `msesh help` lists them; `msesh help TOPIC`
 | `msesh doctor` | check this machine: platform, tmux, terminal, notifier, PATH, files |
 | `msesh preset ...` | name one pane: `list`, `show NAME`, `make [NAME]`, `remove NAME`, `edit` |
 | `msesh layout ...` | name a whole session: `list`, `show`, `make`, `save`, `remove`, `edit` |
-| `msesh help [TOPIC]` | topics: `specs`, `options`, `preset`, `layout`, `agents`, `files`, `env` |
+| `msesh help [TOPIC]` | topics: `specs`, `options`, `preset`, `layout`, `agents`, `hooks`, `files`, `env` |
 | `msesh version` | |
 
 ## Specs
@@ -98,14 +99,14 @@ The arguments to `build`, `rebuild` and `add`, read left to right:
 
 | Spec | Meaning | Example |
 |---|---|---|
-| `N` | N panes of the default preset | `msesh build 4` |
+| `N` | N panes of the default preset (a plain shell) | `msesh build 4` |
 | `PRESET` | one pane of PRESET | `msesh build claude` |
 | `N PRESET` | N panes of PRESET | `msesh build 4 claude` |
 | `PRESET:N` | N panes of PRESET | `msesh build claude:2 pwsh:1` |
 | `+PRESET` | one more pane (`+` is decoration) | `msesh build 3 claude +pwsh` |
 | `!COMMAND` | one pane running COMMAND literally | `msesh build 2 claude '!htop'` |
 
-With no spec you get one pane of the default preset. Specs and options interleave freely, so `msesh build 4 claude -e ladder` and `msesh build -e ladder 4 claude` are the same command.
+With no spec you get one pane of the default preset, which is a plain shell — ask for agents by name. `MSESH_DEFAULT_PRESET` changes that if you would rather `msesh build 4` meant four Claude panes. Specs and options interleave freely, so `msesh build 4 claude -e ladder` and `msesh build -e ladder 4 claude` are the same command.
 
 ## Presets
 
@@ -323,7 +324,7 @@ Everything machine-specific is an environment variable, so msesh should work on 
 | `MSESH_MSYS_ROOT` | Windows: where MSYS2 lives, if it is somewhere unusual |
 | `MSESH_PRESETS`, `MSESH_AGENTS` | presets and agents files |
 | `MSESH_LAYOUTS`, `MSESH_STATE` | layout directory and manifest directory |
-| `MSESH_DEFAULT_PRESET` | what a bare `msesh build 4` launches |
+| `MSESH_DEFAULT_PRESET` | what a bare `msesh build 4` launches (default: `shell`) |
 | `TMUX_BIN` | tmux, if it is not where the search would find it |
 | `WT_BIN`, `WT_PROFILE` | Windows: Terminal binary and the profile a tab uses |
 | `CLAUDE_SETTINGS` | Claude Code's settings.json, for `msesh hooks` |

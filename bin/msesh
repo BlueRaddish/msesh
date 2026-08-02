@@ -113,9 +113,14 @@ WINDOWS_SET=0
 # unless you said otherwise.
 SESSION_SET=0
 
-DEFAULT_PRESET=${MSESH_DEFAULT_PRESET:-claude}
+# A plain shell, deliberately. This used to default to `claude`, which meant the
+# shortest command in the tool started four agents with permission prompts
+# turned off — expensive, surprising, and increasingly wrong as msesh stops
+# being a Claude-only launcher. Ask for agents by name: `msesh build 4 claude`.
+# MSESH_DEFAULT_PRESET=claude restores the old behaviour for anyone who wants it.
+DEFAULT_PRESET=${MSESH_DEFAULT_PRESET:-shell}
 
-MSESH_VERSION=1.1.0
+MSESH_VERSION=1.2.0
 
 # The manifest and layout file format, which moves independently of the tool's
 # own version and only when the meaning of a key changes. Written into every
@@ -280,7 +285,7 @@ OPTIONS you will actually type
   --no-trust — are in 'msesh help options'.
 
 EXAMPLES
-  msesh build 4                     four claude panes here
+  msesh build 4                     four plain shells here
   msesh build 3 claude +pwsh -s work  three claude panes and a shell, 'work'
   msesh build 3 claude -e ladder    panes at low, medium and high effort
   msesh layout make quad 4 claude -e ladder    save that as 'quad'
@@ -599,7 +604,7 @@ ENVIRONMENT — everything machine-specific, so the script itself stays portable
   CLAUDE_BIN            the claude executable         (default: from PATH)
   CLAUDE_FLAGS          flags the claude presets run with
   CLAUDE_JSON           claude's config, for the trust pre-seed
-  MSESH_DEFAULT_PRESET  what a bare 'msesh build 4' launches  (default: claude)
+  MSESH_DEFAULT_PRESET  what a bare 'msesh build 4' launches   (default: shell)
   MSESH_PRESETS         presets file
   MSESH_AGENTS          agents file — see 'msesh help agents'
   MSESH_LAYOUTS         layout directory
@@ -872,6 +877,18 @@ preset_set claude "$CLAUDE_BIN $CLAUDE_FLAGS"
 preset_set cly    "$CLAUDE_BIN $CLAUDE_FLAGS"
 preset_set plan   "$CLAUDE_BIN --remote-control --permission-mode plan"
 preset_set safe   "$CLAUDE_BIN --remote-control"
+# The shell a pane gets when nothing else was asked for: yours, not msesh's
+# idea of one. tmux's own default-shell first, because that is what tmux would
+# have started and it already honours the user's tmux.conf; then $SHELL; then
+# whatever exists. Used both for the `shell` preset and as the thing a pane
+# falls back to when its command exits.
+PANE_SHELL=$("$TMUX_BIN" show-options -gv default-shell 2>/dev/null || true)
+if [ -z "$PANE_SHELL" ] || [ ! -x "$PANE_SHELL" ]; then PANE_SHELL=${SHELL:-}; fi
+if [ -z "$PANE_SHELL" ] || [ ! -x "$PANE_SHELL" ]; then
+  PANE_SHELL=$(command -v bash || command -v sh || echo /bin/sh)
+fi
+preset_set shell "$PANE_SHELL -i"
+
 # Shell presets come from the platform layer, which offers only the shells this
 # machine actually has. A preset list advertising cmd.exe on Linux is lying
 # about the machine, and 'msesh build 2 cmd' failing at the pane is a worse way
@@ -2123,22 +2140,6 @@ if [ "$EXISTED" = 1 ] && [ "$ADD" = 0 ]; then
   fi
 else
   [ "$PRESEED_TRUST" = 1 ] && [ "$HAS_CLAUDE" = 1 ] && preseed_trust
-
-  # The shell a pane falls back to. Your shell, not msesh's idea of one: this
-  # used to be a hardcoded `bash -i`, which is wrong the moment msesh leaves
-  # Windows — macOS defaults to zsh, and plenty of people run fish. A pane that
-  # outlives its command should leave you somewhere you recognise.
-  #
-  # tmux's own default-shell first, because that is the shell tmux would have
-  # started and it already respects the user's tmux.conf; then $SHELL; then
-  # whatever exists. A preset naming a shell outright (`bash`, `pwsh`, `fish`)
-  # is unaffected — that is someone asking for a specific shell, which is not
-  # this decision.
-  PANE_SHELL=$("$TMUX_BIN" show-options -gv default-shell 2>/dev/null || true)
-  if [ -z "$PANE_SHELL" ] || [ ! -x "$PANE_SHELL" ]; then PANE_SHELL=${SHELL:-}; fi
-  if [ -z "$PANE_SHELL" ] || [ ! -x "$PANE_SHELL" ]; then
-    PANE_SHELL=$(command -v bash || command -v sh || echo /bin/sh)
-  fi
 
   # Keep the pane alive after its command exits, so a stray /exit or a crash
   # leaves you a shell in place instead of collapsing the layout.
