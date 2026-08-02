@@ -341,181 +341,250 @@ EOF
 
 help_specs() {
   cat <<EOF
-SPECS — the pane arguments to build, rebuild and add.
+NAME
+  msesh specs — the pane arguments to build, rebuild and add
 
-Read left to right. With no spec at all you get one pane of the default
-preset ($DEFAULT_PRESET).
+USAGE
+  msesh build [OPTIONS] [SPEC...]
 
-  N              N panes of the default preset    msesh build 4
-  PRESET         one pane of PRESET               msesh build claude
-  N PRESET       N panes of PRESET                msesh build 4 claude
-  PRESET:N       N panes of PRESET                msesh build claude:2 pwsh:1
-  +PRESET        one more pane, + is decoration   msesh build 3 claude +pwsh
-  !COMMAND       one pane running COMMAND as-is   msesh build 2 claude '!htop'
+DESCRIPTION
+  A spec says what one pane runs. Specs are read left to right, and may be
+  mixed with options in any order. With no spec at all you get one pane of
+  the default preset ($DEFAULT_PRESET).
 
-Specs and options can interleave, so 'msesh build 4 claude -e ladder' and
-'msesh build -e ladder 4 claude' are the same command.
+EXAMPLES
+  Four panes of the default preset:
+    \$ msesh build 4
 
-A spec that collides with a command name needs the verb to disambiguate: a
-preset called 'list' is 'msesh build list'.
+  Four claude panes instead:
+    \$ msesh build 4 claude
 
-See 'msesh help preset' for what a preset is and how to add one.
+  Three claude panes and one shell:
+    \$ msesh build 3 claude +shell
+
+  Two claude panes and one running htop:
+    \$ msesh build 2 claude '!htop'
+
+  Two of one preset, one of another:
+    \$ msesh build claude:2 pwsh:1
+
+ARGUMENTS
+  N            N panes of the default preset
+  PRESET       one pane of PRESET
+  N PRESET     N panes of PRESET
+  PRESET:N     N panes of PRESET
+  +PRESET      one more pane; the + is decoration
+  !COMMAND     one pane running COMMAND as written
+
+  A spec that collides with a command name needs the verb to disambiguate:
+  a preset called 'list' is 'msesh build list'.
+
+SEE ALSO
+  msesh help preset     what a preset is, and how to add one
+  msesh help options    every option a build takes
 EOF
 }
 
 help_options() {
   cat <<EOF
-OPTIONS — all of them. Only build, rebuild and add use the pane ones.
+NAME
+  msesh options — every option, grouped
 
+USAGE
+  msesh <COMMAND> [OPTIONS] [SPEC...]
+
+DESCRIPTION
+  Only build, rebuild and add read the pane options. A restored session takes
+  its settings from its manifest unless you override them on the command line,
+  so 'msesh restore work -w 2' is a one-off tweak and 'msesh restore work' is
+  the session as it was.
+
+EXAMPLES
+  Name a session and put every pane in one directory:
+    \$ msesh build 4 -s work -d /c/src/thing
+
+  Check what a line would build, and build nothing:
+    \$ msesh build quad --dry-run
+
+  One pane per window, so every pane alerts on its own:
+    \$ msesh build 4 claude -w 1
+
+OPTIONS
   Session
-    -s, --session NAME   session name (default: msesh)
+    -s, --session NAME   name the session (default: msesh)
     -d, --dir DIR        working directory for every pane (default: \$PWD)
-        --ephemeral      closing the tab kills the session, instead of the
-                         session outliving it
-        --no-tab         build the session but do not open a terminal tab;
-                         this is what 'restore --all' uses from a logon task
-    -n, --dry-run        print the panes, commands and window split this would
-                         create, then stop. Nothing is started, no manifest is
-                         written. The cheap way to check a spec line or a
-                         layout without waiting on four agents
+        --ephemeral      kill the session when the tab closes
+        --no-tab         build the session without opening a terminal tab
+    -n, --dry-run        print what would be built, build nothing
 
   Panes
-    -e, --effort LIST    effort levels for agent panes, comma separated,
-                         assigned in pane order; the last repeats for any
-                         panes left over. l/m/h/x expand to low/medium/high/
-                         xhigh; 'ladder' means low,medium,high. Panes running
-                         an agent with no effort setting are skipped, and a
-                         level its agent does not have is an error — see
-                         'msesh help agents'
-    -w, --width N        max panes per window before spilling (default: 4).
-                         0 puts every pane in one window, however small
-        --windows LIST   name the windows this build creates, comma separated
-                         and in order — 'repo,logs'. Names run out silently:
-                         anything past the end falls back to m1, m2, … A name
-                         appears in the status bar, in the tab title when that
-                         window is waiting, and in its toast
-        --lazy           pre-type agent panes' commands without running them,
-                         so you press Enter in the ones you actually want.
-                         This is already the default unless you pass -e
-        --eager          start agent panes straight away, without -e
+    -e, --effort LIST    effort for agent panes, in pane order
+    -w, --width N        max panes per window before spilling (default: 4)
+        --windows LIST   name the windows this build creates, in order
+        --lazy           pre-type agent panes without running them (default)
+        --eager          start agent panes straight away
 
   Notifications
-        --notify SECS    toast when a pane has produced no output for SECS
-                         (default: 20, 0 = off)
+        --notify SECS    toast after SECS of pane silence (default: 20, 0=off)
         --no-notify      same as --notify 0
-
-    Silence is the fallback. Run 'msesh hooks install' and agent panes report
-    the end of a turn themselves — 'msesh help hooks'. These options govern
-    everything that is not an agent.
-
-    A toast is gone in seconds and does not say where to look, so the alert
-    is also shown in three places that stay put until you deal with it:
-
-      the tab       the terminal tab title becomes
-                    '(!) msesh: NAME — window 2 waiting'
-      the status    the waiting window is red, with a '!', in tmux's status bar
-      the block     every pane border in that window turns red and says
-                    '<< WAITING >>'
-
-    All three clear the moment you switch to that window. tmux raises alerts
-    per window, never per pane — a window is silent only once every pane in it
-    is — so the window is what gets highlighted. Build with '-w 1' if you want
-    one pane per window and therefore an alert per pane.
-
-    MSESH_HIGHLIGHT=0 turns all three off and leaves the toast alone.
 
   Other
         --all            restore or kill every known session, not just one
         --no-trust       skip the workspace-trust pre-seed
+    -h, --help           show this help
+        --version        show the version
 
-A restored session takes its settings from its manifest unless you override
-them on the command line, so 'msesh restore work -w 2' is a one-off tweak and
-'msesh restore work' is the session as it was.
+  Notes on the ones that carry a rule with them:
+
+    -e         l/m/h/x expand to low/medium/high/xhigh, and 'ladder' means
+               low,medium,high. The last level repeats for panes left over.
+               An agent with no effort setting is skipped; a level its agent
+               does not have is an error naming both.
+    -w 0       puts every pane in one window, however small it gets.
+    --windows  names run out silently — anything past the end falls back to
+               m1, m2, … A name shows in the status bar, in the tab title
+               when that window waits, and in its toast.
+    --no-tab   this is what 'restore --all' uses from a logon task.
+
+  Silence is the fallback signal. Run 'msesh hooks install' and agent panes
+  report the end of a turn themselves; these options then govern only the
+  panes that are not agents.
+
+  A toast is gone in seconds and does not say where to look, so the alert also
+  lands in three places that stay until you deal with them: the terminal tab
+  title, the window's entry in tmux's status bar, and every pane border in
+  that window. All three clear when you switch to it. tmux alerts per window,
+  never per pane, so the window is what gets marked — build with '-w 1' for an
+  alert per pane. MSESH_HIGHLIGHT=0 drops all three and keeps the toast.
+
+SEE ALSO
+  msesh help specs      the pane arguments
+  msesh help agents     which commands -e and --lazy apply to
+  msesh help hooks      the turn-end signal these options fall back from
 EOF
 }
 
 help_preset() {
   local presets=${MSESH_PRESETS:-$(plat_config_home)/presets.conf}
   cat <<EOF
-PRESETS — the named commands a pane can run.
+NAME
+  msesh preset — name a command one pane runs
 
-  msesh preset list           every preset, built-ins first, then yours
-  msesh preset show NAME      the command one preset resolves to
-  msesh preset make [NAME]    write a new one — asks, if you leave things out
-  msesh preset remove NAME    delete one of yours
-  msesh preset edit           open the presets file in \$EDITOR
+USAGE
+  msesh preset list
+  msesh preset show NAME
+  msesh preset make [NAME] [COMMAND]
+  msesh preset remove NAME
+  msesh preset edit
 
-'preset make' with a name and a quoted command writes it straight out:
+DESCRIPTION
+  A preset is a name for one pane's command, usable anywhere a spec takes a
+  preset name. One pane makes a preset; more than one makes a layout, which
+  is a name for a whole session — see 'msesh help layout'.
 
-  msesh preset make review "claude --remote-control /code-review"
+EXAMPLES
+  Write one straight out:
+    \$ msesh preset make review "claude /code-review"
 
-With anything missing it asks instead — how many panes, and what each one
-runs. Answer a pane with a preset name, or with a "quoted command" to run
-that command as-is; naming a preset that does not exist yet offers to write
-that one too, which is how you add 'codex' or 'gemini' the first time.
+  Then use it like any other preset:
+    \$ msesh build 4 review
 
-One pane makes a preset, usable anywhere a preset name is: 'msesh build 4
-review'. More than one makes a layout — a whole named session, built with
-'msesh build NAME'. 'msesh help layout' is the rest of that story, including
-how to write one without being asked any questions.
+  Leave things out and it asks instead:
+    \$ msesh preset make
 
-Built in: shell, then the shells this machine has, then the agents installed
-on it. All of them are the bare command — flags are yours to add.
+COMMANDS
+  list             every preset, built-ins first, then yours
+  show NAME        the command one preset resolves to
+  make [NAME]      write a new one, asking for whatever you left out
+  remove NAME      delete one of yours
+  edit             open the presets file in \$EDITOR
 
-Your own live in
+  'make' asks how many panes and what each runs. Answer a pane with a preset
+  name, or with a "quoted command" to run that command as written; naming a
+  preset that does not exist yet offers to write that one too, which is how
+  you add 'codex' or 'gemini' the first time.
+
+FILES
   $presets
-as 'name = command' lines, one per line, and override a built-in of the same
-name. A preset whose command runs a known agent — claude, codex, and whatever
-else you have registered — is treated as an agent pane: it gets an effort flag
-injected when you pass -e, and it is what --lazy leaves pre-typed rather than
-started. See 'msesh help agents'. Everything else is run as-is.
 
-  review = claude --remote-control --dangerously-skip-permissions /code-review
-  watch  = npm run dev
+  One 'name = command' line each. Yours override a built-in of the same name.
 
-For a one-off command you do not want to name, put it in a spec instead:
-  msesh build 2 claude '!npm run dev'
+    review = claude --dangerously-skip-permissions /code-review
+    watch  = npm run dev
+
+  Built in: shell, then the shells this machine has, then the agents on it —
+  each the bare command, with flags left to you. A preset whose command runs
+  a known agent is treated as an agent pane: -e injects that agent's effort
+  flag, and --lazy leaves it pre-typed rather than started. Everything else
+  runs as written.
+
+  For a one-off you do not want to name, use a spec instead:
+    \$ msesh build 2 claude '!npm run dev'
+
+SEE ALSO
+  msesh help layout     naming a whole session
+  msesh help agents     what makes a preset an agent pane
+  msesh help specs      where a preset name can appear
 EOF
 }
 
 help_layout() {
   local dir=${MSESH_LAYOUTS:-$(plat_config_home)/layouts}
   cat <<EOF
-LAYOUTS — a name for a whole session, the way a preset is a name for one pane.
+NAME
+  msesh layout — name a whole session, the way a preset names one pane
 
-  msesh layout make NAME [SPECS]   save a session under a name
-  msesh layout save SESS [NAME]    save a session you already built
-  msesh layout list                every layout, with its panes
-  msesh layout show NAME           the file behind one
-  msesh layout remove NAME         delete one
-  msesh layout edit NAME           open it in \$EDITOR
+USAGE
+  msesh layout make NAME [SPEC...] [OPTIONS]
+  msesh layout save SESSION [NAME]
+  msesh layout list
+  msesh layout show NAME
+  msesh layout remove NAME
+  msesh layout edit NAME
 
-'layout make' takes the same words you would have typed to build the session,
-and every option a build takes:
+DESCRIPTION
+  'layout make' takes the same words you would have typed to build the
+  session, and every option a build takes. The layout names the session
+  unless -s says otherwise, so building one twice means attaching to the one
+  already up, not making a second copy.
 
-  msesh layout make quad 4 claude -e ladder
-  msesh layout make repo 2 claude +pwsh -d /c/src/thing -w 1 --notify 30
+EXAMPLES
+  Save four claude panes at rising effort:
+    \$ msesh layout make quad 4 claude -e ladder
 
-Then build it, as often as you like:
+  Build it, as often as you like:
+    \$ msesh build quad
 
-  msesh build quad                 four claude panes, low/medium/high, as saved
-  msesh build quad -e x            the same session, one option overridden
-  msesh build quad -s spike        the same session under another name
+  The same session with one option overridden, under another name:
+    \$ msesh build quad -e x -s spike
 
-The layout names the session unless -s says otherwise, so 'msesh build quad'
-twice over means attaching to the one that is already up, not a second copy.
+  Save one you already built by hand:
+    \$ msesh layout save work repo
 
-Leave the specs out and it asks instead — how many panes, what each runs,
-where, at what effort. Answer a pane with a preset name or a "quoted command";
-naming a preset that does not exist yet offers to write that one too.
+COMMANDS
+  make NAME        save a session under a name
+  save SESSION     save a session you already built
+  list             every layout, with its panes
+  show NAME        the file behind one
+  remove NAME      delete one
+  edit NAME        open it in \$EDITOR
 
-A layout is a session, so it is used on its own: 'msesh build quad +pwsh' and
-'msesh build 3 quad' are errors rather than guesses.
+  Leave the specs out and 'make' asks instead — how many panes, what each
+  runs, where, at what effort.
 
-  Layouts live in    $dir
-  Sessions msesh recorded for itself live elsewhere and are separate — see
-  'msesh help files'. 'msesh forget' drops a recording; only 'msesh layout
-  remove' drops a layout.
+  A layout is a whole session, so it is used on its own: 'msesh build quad
+  +pwsh' and 'msesh build 3 quad' are errors rather than guesses.
+
+FILES
+  $dir/
+
+  Sessions msesh recorded for itself are a separate directory in the same
+  format — a layout is a definition, a recording is what happened. 'msesh
+  forget' drops a recording; only 'msesh layout remove' drops a layout.
+
+SEE ALSO
+  msesh help preset     naming one pane
+  msesh help files      where both kinds live
 EOF
 }
 
@@ -524,20 +593,26 @@ EOF
 help_agents() {
   local file=${MSESH_AGENTS:-$(plat_config_home)/agents.conf} i flag levels cmd
   cat <<EOF
-AGENTS — pane commands msesh treats as an assistant rather than a shell.
+NAME
+  msesh agents — the pane commands msesh treats as an assistant, not a shell
 
-Being one changes two things:
+USAGE
+  msesh build [OPTIONS] N AGENT
 
-  -e         msesh adds that agent's own effort flag for you, so you can say
-             '-e high' instead of remembering how each one spells it. It
-             replaces whatever effort the preset would have used; a preset
-             that already names an effort is left alone.
-  --lazy     the pane opens with the command typed but NOT run, so nothing
-             starts until you press Enter. This is the default for agent
-             panes unless you pass -e; agents are slow and expensive to
-             start, so msesh does not start four of them because you asked
-             for four panes. --eager starts them anyway.
+DESCRIPTION
+  Being an agent changes two things: -e adds that agent's own effort flag for
+  you, so you can say '-e high' without remembering how each one spells it;
+  and the pane opens pre-typed rather than started, because agents are slow
+  and expensive and you asked for panes, not for four running assistants.
 
+EXAMPLES
+  Three claude panes at low, medium and high:
+    \$ msesh build 3 claude -e ladder
+
+  Start them straight away instead of pre-typing:
+    \$ msesh build 3 claude --eager
+
+ARGUMENTS
 EOF
   printf '  +------------+--------------------+----------------------------+--------------------------+
 '
@@ -564,54 +639,24 @@ EOF
 '
   cat <<EOF
 
-A pane is an agent pane if the command it runs is one of the above, so
-'review = claude /code-review' counts without being listed.
+  A pane is an agent pane if the command it runs is one of the above, so
+  'review = claude /code-review' counts without being listed. An agent with
+  no effort flag is skipped by -e; a level it does not have is an error
+  naming both. -e replaces whatever effort the preset would have used, and a
+  preset that already names one is left alone.
 
-An agent with no effort flag is skipped by -e. A level it does not have is an
-error, naming both.
-
-Teach msesh another one in
+FILES
   $file
-as 'name = flag | levels'. The flag carries its own separator:
 
-  myagent    = --reasoning | quick,deep
-  otheragent =                              (no effort setting)
-EOF
-}
+  One 'name = flag | levels' line each, teaching msesh another agent. The
+  flag carries its own separator:
 
+    myagent    = --reasoning | quick,deep
+    otheragent =                              (no effort setting)
 
-help_hooks() {
-  cat <<EOF
-HOOKS — how a pane tells msesh its turn has ended.
-
-  msesh hooks status     is it installed, and what else is in that file
-  msesh hooks install    add it
-  msesh hooks remove     take it out again
-  msesh hooks --dry-run  with install or remove: print, write nothing
-
-By default msesh infers "waiting on you" from silence: a pane that has printed
-nothing for --notify seconds has, in practice, finished. That is a guess. It is
-late by the length of the timeout, and wrong in both directions — an agent
-thinking quietly looks finished, and one printing steadily never alerts.
-
-Claude Code will just tell you. 'hooks install' adds a Stop hook to
-  $CLAUDE_SETTINGS
-which runs msesh-notify the moment a turn ends. The pane is marked, its window
-lights up, and 'msesh status' shows it as WAITING. Silence monitoring stays on
-for panes that are not agents, where it was always the right signal.
-
-That file belongs to Claude Code, not to msesh, and usually holds hooks you
-wrote yourself. So this command:
-
-  * only ever appends — it does not rewrite, reorder or drop an entry it did
-    not create
-  * tags everything it writes with "_msesh", so remove takes exactly its own
-  * copies the file to settings.json.msesh-backup before writing
-  * parses what it wrote before letting it replace anything
-  * changes nothing on a second install
-
-An install followed by a remove leaves the file byte-identical. 'hooks status'
-never writes at all.
+SEE ALSO
+  msesh help preset     naming an agent's command with flags attached
+  msesh help options    -e, --lazy and --eager in full
 EOF
 }
 
@@ -619,82 +664,125 @@ help_files() {
   # A path list, not an essay. What each of these is *for* is the business of
   # its own topic; someone typing 'help files' wants to know where to look.
   cat <<EOF
-FILES
+NAME
+  msesh files — where msesh keeps things
 
+FILES
   presets    ${MSESH_PRESETS:-$(plat_config_home)/presets.conf}
   agents     ${MSESH_AGENTS:-$(plat_config_home)/agents.conf}
   layouts    ${MSESH_LAYOUTS:-$(plat_config_home)/layouts}/
   sessions   ${MSESH_STATE:-$(plat_config_home)/sessions}/
   settings   $CLAUDE_SETTINGS
 
-'layouts' are sessions you described; 'sessions' are ones msesh recorded.
-'settings' is Claude Code's, and only 'msesh hooks' touches it.
+  'layouts' are sessions you described, 'sessions' ones msesh recorded.
+  'settings' is Claude Code's, and only 'msesh hooks' touches it.
 
-See 'msesh help preset', 'agents', 'layout', 'hooks'.
+SEE ALSO
+  msesh help preset     the presets file
+  msesh help agents     the agents file
+  msesh help layout     layouts against recordings
+  msesh help hooks      what msesh writes into settings
+  msesh help env        overriding any of these paths
 EOF
 }
 
-# Printed from the table itself rather than written out, so a registration
-# added in agents.conf shows up here without anyone remembering to say so.
-
 help_hooks() {
   cat <<EOF
-HOOKS — how a pane tells msesh its turn has ended.
+NAME
+  msesh hooks — the turn-end signal an agent pane sends for itself
 
-  msesh hooks status     is it installed, and what else is in that file
-  msesh hooks install    add it
-  msesh hooks remove     take it out again
-  msesh hooks --dry-run  with install or remove: print, write nothing
+USAGE
+  msesh hooks status
+  msesh hooks install [--dry-run]
+  msesh hooks remove [--dry-run]
 
-By default msesh infers "waiting on you" from silence: a pane that has printed
-nothing for --notify seconds has, in practice, finished. That is a guess. It is
-late by the length of the timeout, and wrong in both directions — an agent
-thinking quietly looks finished, and one printing steadily never alerts.
+DESCRIPTION
+  Without this, msesh infers "waiting on you" from silence: a pane that has
+  printed nothing for --notify seconds has, in practice, finished. That is a
+  guess, late by the length of the timeout and wrong in both directions — an
+  agent thinking quietly looks finished, one printing steadily never alerts.
+  Claude Code will just say so, and 'hooks install' asks it to.
 
-Claude Code will just tell you. 'hooks install' adds a Stop hook to
+EXAMPLES
+  See whether it is on, and what else is in that file:
+    \$ msesh hooks status
+
+  Turn it on:
+    \$ msesh hooks install
+
+  See exactly what would be written, and write nothing:
+    \$ msesh hooks install --dry-run
+
+COMMANDS
+  status           report whether it is installed, and what shares the file
+  install          add the Stop hook
+  remove           take it out again
+
+OPTIONS
+  --dry-run        with install or remove: print the change, write nothing
+
+FILES
   $CLAUDE_SETTINGS
-which runs msesh-notify the moment a turn ends. The pane is marked, its window
-lights up, and 'msesh status' shows it as WAITING. Silence monitoring stays on
-for panes that are not agents, where it was always the right signal.
 
-That file belongs to Claude Code, not to msesh, and usually holds hooks you
-wrote yourself. So this command:
+  The hook runs msesh-notify the moment a turn ends: the pane is marked, its
+  window lights up, and 'msesh status' shows it as WAITING. Silence
+  monitoring stays on for panes that are not agents, where it was always the
+  right signal.
 
-  * only ever appends — it does not rewrite, reorder or drop an entry it did
-    not create
-  * tags everything it writes with "_msesh", so remove takes exactly its own
-  * copies the file to settings.json.msesh-backup before writing
-  * parses what it wrote before letting it replace anything
-  * changes nothing on a second install
+  That file belongs to Claude Code and usually holds hooks you wrote
+  yourself, so this command only ever appends, never rewriting, reordering or
+  dropping an entry it did not create. It tags everything it writes with
+  "_msesh" so remove takes exactly its own, copies the file to
+  settings.json.msesh-backup first, parses what it wrote before letting it
+  replace anything, and changes nothing on a second install. An install
+  followed by a remove leaves the file byte-identical. 'status' never writes.
 
-An install followed by a remove leaves the file byte-identical. 'hooks status'
-never writes at all.
+SEE ALSO
+  msesh help options    --notify, the fallback this replaces
+  msesh help agents     which panes send the signal
 EOF
 }
 
 
 help_env() {
   cat <<'EOF'
-ENVIRONMENT — everything machine-specific, so the script itself stays portable.
+NAME
+  msesh env — the environment variables msesh honours
 
+DESCRIPTION
+  Everything machine-specific is a variable, so the script itself stays
+  portable and this repo can stay public.
+
+EXAMPLES
+  Make a bare build launch codex panes instead of shells:
+    $ export MSESH_DEFAULT_PRESET=codex
+
+  Keep a waiting window from being marked, without losing the toast:
+    $ MSESH_HIGHLIGHT=0 msesh build 4 claude
+
+ENVIRONMENT
   CLAUDE_BIN            the claude executable         (default: from PATH)
   CLAUDE_FLAGS          flags the claude presets run with
   CLAUDE_JSON           claude's config, for the trust pre-seed
   MSESH_DEFAULT_PRESET  what a bare 'msesh build 4' launches   (default: shell)
   MSESH_PRESETS         presets file
-  MSESH_AGENTS          agents file — see 'msesh help agents'
+  MSESH_AGENTS          agents file
   MSESH_LAYOUTS         layout directory
   MSESH_STATE           manifest directory
   MSESH_NOTIFIER        the toast helper             (default: msesh-notify)
-  MSESH_HIGHLIGHT       0 to stop marking a waiting window in the tab title,
-                        the status bar and the pane borders
+  MSESH_HIGHLIGHT       0 to stop marking a waiting window
   MSESH_TERMINAL        the terminal to open a session in, before the search
   MSESH_NOTIFY_CMD      a command taking TITLE BODY, before the search
   MSESH_OS              override platform detection (linux/macos/windows/wsl)
   TMUX_BIN              tmux
   TERMINAL              honoured on Linux, as the usual convention
   MSESH_MSYS_ROOT       Windows: an MSYS2 install root, if it is unusual
-  WT_BIN, WT_PROFILE    Windows: Terminal binary and the profile a tab uses
+  WT_BIN                Windows: the Terminal binary
+  WT_PROFILE            Windows: the profile a new tab uses
+
+SEE ALSO
+  msesh help files      the paths these variables override
+  msesh help agents     what MSESH_AGENTS registers
 EOF
 }
 
