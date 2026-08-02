@@ -86,11 +86,12 @@ Every command is a word, not a flag. `msesh help` lists them; `msesh help TOPIC`
 | `msesh list` | live sessions, layouts and recorded sessions |
 | `msesh status [NAME]` | what each pane is doing, and which window is waiting |
 | `msesh send NAME TEXT` | type TEXT into every agent pane of NAME (`--all` for every pane) |
-| `msesh hooks [SUB]` | `status`, `install` or `remove` the turn-end signal |
+| `msesh snapshot [NAME]` | record a live session, conversations and all |
+| `msesh hooks [SUB]` | `status`, `install` or `remove` the agent hooks |
 | `msesh doctor` | check this machine: platform, tmux, terminal, notifier, PATH, files |
 | `msesh preset ...` | name one pane: `list`, `show NAME`, `make [NAME]`, `remove NAME`, `edit` |
 | `msesh layout ...` | name a whole session: `list`, `show`, `make`, `save`, `remove`, `edit` |
-| `msesh help [TOPIC]` | topics: `specs`, `options`, `preset`, `layout`, `agents`, `hooks`, `files`, `env` |
+| `msesh help [TOPIC]` | topics: `specs`, `options`, `preset`, `layout`, `agents`, `hooks`, `resume`, `files`, `env` |
 | `msesh version` | |
 
 ## Specs
@@ -249,7 +250,37 @@ work:
 
 Silence monitoring stays as the fallback for panes that are not agents — a build, a test run, a REPL — where it was always the right signal.
 
-**That file is not msesh's**, and it commonly holds hooks you wrote. So `hooks install` is **append-only** (it never rewrites, reorders or drops an entry it did not create), every entry it writes is tagged `"_msesh": 1` so `hooks remove` takes exactly its own, it backs the file up to `settings.json.msesh-backup` first, it validates the JSON before replacing anything, and running it twice changes nothing the second time. `hooks status` is read-only and `--dry-run` prints the result without writing. An install followed by a remove leaves the file byte-identical.
+**That file is not msesh's**, and it commonly holds hooks you wrote. So `hooks install` is **append-only** (it never rewrites, reorders or drops an entry it did not create), every entry it writes is tagged `"_msesh": 1` so `hooks remove` takes exactly its own, it backs the file up to `settings.json.msesh-backup` first, it validates the JSON before replacing anything, and running it twice changes nothing the second time. `hooks status` is read-only and `--dry-run` prints the result without writing. An install followed by a remove leaves the file byte-identical, line endings included.
+
+`hooks install` adds two hooks, together: `Stop` is the turn-end signal above, and `SessionStart` records which conversation each pane holds — which is what the next section restores from.
+
+## Coming back to the conversation, not just the panes
+
+`msesh restore work` rebuilds the shape of a session: the right panes, running the right commands, in the right windows. The agents in them are brand new and remember nothing.
+
+```sh
+msesh restore work --resume
+```
+
+brings each pane back to the conversation it was in, in the directory it was in, at the size it was.
+
+This needs `msesh hooks install` — the conversation ids come from the `SessionStart` hook, and without it there is nothing recorded to come back to.
+
+**A snapshot is a manifest with a timestamp.** Not a third concept: same format, same reader, so `msesh list` still shows two sections and everything that reads a manifest reads a snapshot for free. One is taken automatically on `msesh kill`, which is how a session normally ends and the last moment its conversations can be read; `msesh snapshot NAME` takes one on demand.
+
+Panes are matched to the snapshot **by position**, because position is the only identity a pane has across a kill. A pane whose conversation was never recorded — one you never pressed Enter in, say — starts fresh. **Three resumed and one new is a normal restore, not a failure.** Resumed panes are marked with a trailing `~`:
+
+```
+  window m1
+    claude~                claude --resume 0bfc5eb6-6653-44ba-bac5-2b1fa5c75930
+    claude~                claude --resume 3a91c204-11de-4c7a-9f02-7b6e5d0a1c88
+    claude                 claude
+  2 pane(s) would resume a conversation, 1 would start fresh
+```
+
+Snapshots are kept per machine — a conversation id and an absolute path mean nothing on another one. Everything from the last week is kept, then one a day for two months, then nothing.
+
+Only an agent that can be reopened *by id* takes part. `claude` can; `codex` resumes by recency, which is a different thing msesh cannot record, so it starts fresh rather than pretending. Add one in `agents.conf` with a third field: `myagent = --reasoning | quick,deep | --continue`.
 
 ## Checking before you build
 
@@ -307,7 +338,7 @@ Both ask `msesh complete-names KIND`, which prints one name per line and nothing
 
 ## Tests
 
-`./test.sh` — 152 checks over spec resolution, effort against the agent table, layout resolution, the preset file rewrite, the manifest round-trip, the portability invariants, and whether the help still describes the tool. Everything goes through `--dry-run`, so no tmux session is ever built. `-v` lists each check.
+`./test.sh` — 173 checks over spec resolution, effort against the agent table, layout resolution, the preset file rewrite, the manifest round-trip, the portability invariants, and whether the help still describes the tool. Everything goes through `--dry-run`, so no tmux session is ever built. `-v` lists each check.
 
 The run is dominated by process startup, so it is quick on Linux and macOS and slow where spawning is expensive — on Windows under MSYS2, expect around four minutes rather than the couple of seconds it takes elsewhere.
 
