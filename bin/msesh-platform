@@ -350,6 +350,23 @@ plat_config_home() {
   printf '%s/msesh' "${XDG_CONFIG_HOME:-$HOME/.config}"
 }
 
+# Which machine this is, for filing snapshots. Snapshots hold conversation ids
+# and absolute paths, both of which mean nothing on another machine — and the
+# state directory is the kind of thing people sync. Filing per host keeps one
+# machine's snapshots from being offered as another's.
+#
+# Falls back rather than fails: an unnameable host is a worse reason to lose a
+# snapshot than a directory called 'local' is a problem.
+plat_host() {
+  local h=${HOSTNAME:-}
+  [ -n "$h" ] || h=$(hostname 2>/dev/null || true)
+  [ -n "$h" ] || h=${COMPUTERNAME:-}
+  [ -n "$h" ] || h=local
+  # Anything that is awkward in a path becomes a dash; the name is an index,
+  # not a label anyone reads.
+  printf '%s' "$h" | tr -c 'A-Za-z0-9._-' '-' | sed 's/-*$//'
+}
+
 # cksum, not md5sum: macOS ships `md5` with different arguments, and cksum is
 # POSIX and present everywhere. Only used to compare two files for equality.
 plat_checksum() {

@@ -92,6 +92,7 @@ SEND_ENTER=1
 SEND_ALL=0
 ACTION=
 RESTORE=0
+RESUME=0
 ALL=0
 FORGET=
 ATTACH_ONLY=0
@@ -120,7 +121,7 @@ SESSION_SET=0
 # MSESH_DEFAULT_PRESET=claude restores the old behaviour for anyone who wants it.
 DEFAULT_PRESET=${MSESH_DEFAULT_PRESET:-shell}
 
-MSESH_VERSION=1.3.1
+MSESH_VERSION=1.4.0
 
 # The manifest and layout file format, which moves independently of the tool's
 # own version and only when the meaning of a key changes. Written into every
@@ -128,7 +129,7 @@ MSESH_VERSION=1.3.1
 # the difference between a migration and a puzzling failure is whether the old
 # files said what they were. Files written before 0.6.0 carry no version and
 # are read as 1, which is what they are.
-MSESH_FORMAT=1
+MSESH_FORMAT=2
 
 # Claude Code's two files. The first holds the workspace-trust record msesh
 # pre-seeds; the second holds hooks, and is where 'msesh hooks' installs the
@@ -159,28 +160,35 @@ CLAUDE_SETTINGS=${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}
 AGENT_NAMES=()
 AGENT_EFFORT=()    # flag spelling, including its separator; '' for none
 AGENT_LEVELS=()    # accepted levels, low to high; '' for none
+AGENT_RESUME=()    # flag that takes a conversation id; '' for none
 
 agent_register() {
   local i
   for i in "${!AGENT_NAMES[@]}"; do
     if [ "${AGENT_NAMES[$i]}" = "$1" ]; then
-      AGENT_EFFORT[$i]=$2; AGENT_LEVELS[$i]=$3; return
+      AGENT_EFFORT[$i]=$2; AGENT_LEVELS[$i]=$3; AGENT_RESUME[$i]=${4:-}; return
     fi
   done
   AGENT_NAMES+=("$1"); AGENT_EFFORT+=("$2"); AGENT_LEVELS+=("$3")
+  AGENT_RESUME+=("${4:-}")
 }
 
-agent_register claude "--effort " "low,medium,high,xhigh"
+agent_register claude "--effort " "low,medium,high,xhigh" "--resume "
 agent_register codex  "-c model_reasoning_effort=" "low,medium,high"
 agent_register gemini "" ""
 agent_register aider  "" ""
 
-# Same 'name = value' shape as presets.conf, with the two fields a registration
+# Same 'name = value' shape as presets.conf, with the fields a registration
 # needs split on '|', so an agent msesh has never heard of is a line in a file
 # rather than a patch to this script:
 #
-#   myagent = --reasoning | quick,deep
+#   myagent = --reasoning | quick,deep | --continue
 #   otheragent =                        (no effort setting)
+#
+# The third field is optional and rarely needed: it is the flag that takes a
+# conversation id, and only an agent that can be resumed by id has one. codex
+# resumes by recency rather than by id, which is a different thing and not
+# something msesh can record, so it is left out rather than faked.
 AGENT_FILE=${MSESH_AGENTS:-$(plat_config_home)/agents.conf}
 if [ -r "$AGENT_FILE" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
@@ -189,12 +197,14 @@ if [ -r "$AGENT_FILE" ]; then
     aname=${line%%=*}; arest=${line#*=}
     aflag=${arest%%|*}
     case $arest in *'|'*) alevels=${arest#*|} ;; *) alevels= ;; esac
+    case $alevels in *'|'*) aresume=${alevels#*|}; alevels=${alevels%%|*} ;; *) aresume= ;; esac
     aname=$(printf '%s' "$aname" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
     alevels=$(printf '%s' "$alevels" | sed 's/[[:space:]]//g')
-    # Only the leading space is trimmed from the flag: a trailing one is how
-    # '--effort ' says it wants a space before its value.
+    # Only the leading space is trimmed from the flags: a trailing one is how
+    # '--effort ' and '--resume ' say they want a space before their value.
     aflag=${aflag#"${aflag%%[![:space:]]*}"}
-    [ -n "$aname" ] && agent_register "$aname" "$aflag" "$alevels"
+    aresume=${aresume#"${aresume%%[![:space:]]*}"}
+    [ -n "$aname" ] && agent_register "$aname" "$aflag" "$alevels" "$aresume"
   done < "$AGENT_FILE"
 fi
 
@@ -212,13 +222,14 @@ agent_of_cmd() {
   return 1
 }
 
-agent_field() {                       # agent_field NAME EFFORT|LEVELS
+agent_field() {                       # agent_field NAME effort|levels|resume
   local i
   for i in "${!AGENT_NAMES[@]}"; do
     [ "${AGENT_NAMES[$i]}" = "$1" ] || continue
     case $2 in
       effort) printf '%s' "${AGENT_EFFORT[$i]}" ;;
       levels) printf '%s' "${AGENT_LEVELS[$i]}" ;;
+      resume) printf '%s' "${AGENT_RESUME[$i]:-}" ;;
     esac
     return 0
   done
@@ -293,6 +304,7 @@ COMMANDS
   Keeping
     restore [NAME]    rebuild a session as it was       (--all for every one)
     kill [NAME]       kill a session and its panes      (--all for every one)
+    snapshot [NAME]   record a live session, conversations and all
     forget NAME       drop a recorded session
     list              live sessions, layouts, recorded sessions
 
@@ -331,6 +343,7 @@ SEE ALSO
   msesh help layout     naming a whole session
   msesh help agents     which commands count as an agent
   msesh help hooks      how a pane reports that its turn ended
+  msesh help resume     bringing back the conversations, not just the panes
   msesh help files      where msesh keeps things
   msesh help env        environment variables msesh honours
 
@@ -430,6 +443,7 @@ OPTIONS
 
   Other
         --all            restore or kill every known session, not just one
+        --resume         with restore: bring the conversations back too
         --no-trust       skip the workspace-trust pre-seed
         --no-enter       with send: type the text without pressing Enter
     -h, --help           show this help
@@ -652,15 +666,84 @@ EOF
 FILES
   $file
 
-  One 'name = flag | levels' line each, teaching msesh another agent. The
-  flag carries its own separator:
+  One 'name = flag | levels | resume' line each, teaching msesh another
+  agent. Each flag carries its own separator:
 
-    myagent    = --reasoning | quick,deep
+    myagent    = --reasoning | quick,deep | --continue
     otheragent =                              (no effort setting)
+
+  The third field is the flag that takes a conversation id, and only an agent
+  that can be reopened by id has one — see 'msesh help resume'. claude has it;
+  codex resumes by recency instead, which is a different thing and is left out
+  rather than faked.
 
 SEE ALSO
   msesh help preset     naming an agent's command with flags attached
   msesh help options    -e, --lazy and --eager in full
+  msesh help resume     reopening a conversation on restore
+EOF
+}
+
+help_resume() {
+  local dir=${MSESH_STATE:-$(plat_config_home)/sessions}/snapshots
+  cat <<EOF
+NAME
+  msesh resume — bringing back the conversations, not just the panes
+
+USAGE
+  msesh snapshot [NAME]
+  msesh restore NAME --resume
+
+DESCRIPTION
+  A plain restore rebuilds the shape of a session: the right number of panes,
+  running the right commands, in the right windows. The agents in them are
+  new, and remember nothing. With --resume each pane that had a conversation
+  comes back to it, in the directory it was in, at the size it was.
+
+  This needs 'msesh hooks install'. The conversation ids come from a
+  SessionStart hook; without it there is nothing to record and --resume has
+  nothing to work from.
+
+EXAMPLES
+  Record a session you are about to walk away from:
+    \$ msesh snapshot work
+
+  Bring it back tomorrow, conversations and all:
+    \$ msesh restore work --resume
+
+  See what would come back before doing it:
+    \$ msesh restore work --resume --dry-run
+
+COMMANDS
+  snapshot [NAME]      record a live session, conversations and all
+  restore NAME         rebuild the shape, with fresh agents
+  restore NAME --resume rebuild it and reopen every conversation it can
+
+  A snapshot is also taken automatically on 'msesh kill' — that is how a
+  session normally ends, and the last moment its conversations can be read.
+
+  Panes are matched to the snapshot by position, because position is the only
+  identity a pane has across a kill. A pane whose conversation was never
+  recorded, or whose agent cannot be resumed by id, starts fresh: three
+  resumed and one new is a normal restore, not a failure. Resumed panes are
+  marked with a trailing ~ in their label.
+
+FILES
+  $dir/HOST/
+
+  A snapshot is a manifest with a timestamp — the same format and the same
+  reader, so nothing had to learn a third concept. Layouts are definitions,
+  manifests are recordings, snapshots are the history of recordings, and
+  'msesh list' still shows two sections.
+
+  Filed per machine, because a conversation id and an absolute path mean
+  nothing on another one. Everything from the last week is kept, then one a
+  day for two months, then nothing.
+
+SEE ALSO
+  msesh help hooks      the hook that records the conversations
+  msesh help agents     which agents can be resumed by id
+  msesh help files      where the rest of it lives
 EOF
 }
 
@@ -676,10 +759,14 @@ FILES
   agents     ${MSESH_AGENTS:-$(plat_config_home)/agents.conf}
   layouts    ${MSESH_LAYOUTS:-$(plat_config_home)/layouts}/
   sessions   ${MSESH_STATE:-$(plat_config_home)/sessions}/
+  snapshots  ${MSESH_STATE:-$(plat_config_home)/sessions}/snapshots/HOST/
+  map        ${MSESH_STATE:-$(plat_config_home)/sessions}/agents.map
   settings   $CLAUDE_SETTINGS
 
-  'layouts' are sessions you described, 'sessions' ones msesh recorded.
-  'settings' is Claude Code's, and only 'msesh hooks' touches it.
+  'layouts' are sessions you described, 'sessions' ones msesh recorded, and
+  'snapshots' the history of those recordings. 'map' is which conversation is
+  in which pane, written by a hook. 'settings' is Claude Code's, and only
+  'msesh hooks' touches it.
 
 SEE ALSO
   msesh help preset     the presets file
@@ -693,7 +780,7 @@ EOF
 help_hooks() {
   cat <<EOF
 NAME
-  msesh hooks — the turn-end signal an agent pane sends for itself
+  msesh hooks — what an agent pane tells msesh about itself
 
 USAGE
   msesh hooks status
@@ -701,11 +788,12 @@ USAGE
   msesh hooks remove [--dry-run]
 
 DESCRIPTION
-  Without this, msesh infers "waiting on you" from silence: a pane that has
-  printed nothing for --notify seconds has, in practice, finished. That is a
+  Two hooks, installed and removed together. A Stop hook says a turn has
+  ended: without it msesh infers "waiting on you" from silence, which is a
   guess, late by the length of the timeout and wrong in both directions — an
   agent thinking quietly looks finished, one printing steadily never alerts.
-  Claude Code will just say so, and 'hooks install' asks it to.
+  A SessionStart hook records which conversation a pane holds, which is what
+  'msesh restore --resume' rebuilds from.
 
 EXAMPLES
   See whether it is on, and what else is in that file:
@@ -728,10 +816,11 @@ OPTIONS
 FILES
   $CLAUDE_SETTINGS
 
-  The hook runs msesh-notify the moment a turn ends: the pane is marked, its
-  window lights up, and 'msesh status' shows it as WAITING. Silence
+  The Stop hook runs msesh-notify the moment a turn ends: the pane is marked,
+  its window lights up, and 'msesh status' shows it as WAITING. Silence
   monitoring stays on for panes that are not agents, where it was always the
-  right signal.
+  right signal. The SessionStart hook writes the pane's conversation id into
+  the map named in 'msesh help files'.
 
   That file belongs to Claude Code and usually holds hooks you wrote
   yourself, so this command only ever appends, never rewriting, reordering or
@@ -744,6 +833,7 @@ FILES
 SEE ALSO
   msesh help options    --notify, the fallback this replaces
   msesh help agents     which panes send the signal
+  msesh help resume     what the recorded conversations are for
 EOF
 }
 
@@ -799,11 +889,12 @@ help_topic() {
     layout|layouts|session)       help_layout ;;
     agent|agents)                 help_agents ;;
     hook|hooks)                   help_hooks ;;
+    resume|snapshot|snapshots)    help_resume ;;
     file|files|manifest|manifests) help_files ;;
     env|environment|vars)         help_env ;;
     build|rebuild|add)            help_specs; echo; help_options ;;
     *) echo "msesh: no help topic '$1'" >&2
-       echo "topics: specs, options, preset, layout, agents, hooks, files, env" >&2
+       echo "topics: specs, options, preset, layout, agents, hooks, resume, files, env" >&2
        exit 1 ;;
   esac
 }
@@ -814,7 +905,7 @@ help_topic() {
 # — the flag-per-action scheme this replaces — meant the difference between
 # building a session and destroying every session was one shifted keystroke
 # (-k / -K), and nothing on the command line said which you had asked for.
-COMMANDS="build rebuild add attach restore kill forget list status send preset layout doctor hooks help version"
+COMMANDS="build rebuild add attach restore kill forget list status send preset layout snapshot doctor hooks help version"
 
 # Did-you-mean. A prefix match either way round is not enough on its own — it
 # gets 'lst' but not 'buld', and a dropped letter in the middle is the typo
@@ -863,6 +954,7 @@ case $CMD in
   attach)             ACTION=build; ATTACH_ONLY=1 ;;
   restore)            ACTION=build; RESTORE=1 ;;
   kill)               ACTION=kill ;;
+  snapshot|snap)      ACTION=snapshot ;;
   forget)             ACTION=forget ;;
   list)               ACTION=list ;;
   status)             ACTION=status ;;
@@ -920,6 +1012,7 @@ while [ $# -gt 0 ]; do
     --dry-run|-n) DRY_RUN=1 ;;
     --no-enter)   SEND_ENTER=0 ;;
     --all)        ALL=1 ;;
+    --resume)     RESUME=1 ;;
     -s) SESSION=${1:?-s needs a value}; shift; SESSION_SET=1 ;;
     -d) WORKDIR=${1:?-d needs a value}; shift; DIR_SET=1 ;;
     -e) EFFORTS_RAW=${1:?-e needs a value}; shift ;;
@@ -958,7 +1051,7 @@ case $ACTION in
     else
       SPECS=(${ARGS[@]+"${ARGS[@]}"})
     fi ;;
-  kill|status)
+  kill|status|snapshot)
     take_session_name ;;
   forget)
     if [ "${#ARGS[@]}" = 0 ] && [ "$ALL" = 0 ]; then
@@ -1145,6 +1238,108 @@ manifest_save() {
   } > "$f.tmp" && mv "$f.tmp" "$f"
 }
 
+# --- snapshots ----------------------------------------------------------------
+# A snapshot is a manifest with a timestamp. Not a third concept: same format,
+# same reader, same directory tree — layouts stay definitions, manifests stay
+# recordings, and snapshots are the history of recordings. 'msesh list' gains
+# no third section.
+#
+# It exists because a manifest is written at build time, when the thing worth
+# recording does not exist yet: an agent's conversation id is assigned when it
+# starts, and with panes pre-typed rather than started it may not exist for
+# hours. So the id is collected from the live session instead — on 'kill',
+# which is how a session normally ends, and on demand.
+SNAPSHOT_DIR=$MANIFEST_DIR/snapshots
+AGENTS_MAP=$MANIFEST_DIR/agents.map
+
+# pane id -> conversation id, from the map the SessionStart hook writes.
+resume_id_of() {
+  [ -r "$AGENTS_MAP" ] || return 1
+  local pane=$1 line
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in
+      "$pane	"*) line=${line#*	}; printf '%s' "${line%%	*}"; return 0 ;;
+    esac
+  done < "$AGENTS_MAP"
+  return 1
+}
+
+# Kept: everything under a week, one a day for the next two months, nothing
+# older. Snapshots are small, but a session snapshotted on every kill for a
+# year is thousands of files in a directory people occasionally ls.
+snapshot_prune() {
+  local dir=$1 now day keep f base stamp age
+  now=$(date +%s 2>/dev/null) || return 0
+  for f in "$dir"/*.conf; do
+    [ -e "$f" ] || continue
+    base=${f##*/}
+    stamp=${base%.conf}; stamp=${stamp##*-}         # trailing unix time
+    case $stamp in ''|*[!0-9]*) continue ;; esac    # not ours; leave it alone
+    age=$(( (now - stamp) / 86400 ))
+    [ "$age" -lt 7 ] && continue
+    if [ "$age" -gt 60 ]; then rm -f "$f"; continue; fi
+    day=$(( stamp / 86400 ))
+    eval "keep=\${_snap_day_$day:-}"
+    if [ -n "$keep" ]; then rm -f "$f"; else eval "_snap_day_$day=1"; fi
+  done
+}
+
+# Writes the live shape of a session: which pane holds which conversation,
+# where each one is, and the exact tmux geometry. Silent and successful when
+# there is nothing to record — this runs from 'kill', and a session that
+# cannot be snapshotted must still be killable.
+snapshot_write() {
+  local sess=$1 dir now f
+  session_exists "$sess" || return 1
+  now=$(date +%s 2>/dev/null) || return 1
+  dir=$SNAPSHOT_DIR/$(plat_host 2>/dev/null || echo local)
+  mkdir -p "$dir" 2>/dev/null || return 1
+  f=$dir/$sess-$now.conf
+
+  {
+    echo "# msesh snapshot of '$sess' — $(date 2>/dev/null)"
+    echo "# restore with: msesh restore $sess --resume"
+    printf 'version=%s\n' "$MSESH_FORMAT"
+    printf 'snapshot=%s\n' "$now"
+    # The build options, taken from the manifest so a snapshot restores like
+    # the session did rather than like today's defaults.
+    if [ -r "$(manifest_of "$sess")" ]; then
+      grep -E '^(dir|effort|eager|width|notify|windows|spec)=' "$(manifest_of "$sess")" 2>/dev/null
+    fi
+    # Exact geometry rather than re-tiling: a session someone has resized is
+    # not the same session after a restore that tiles it evenly again.
+    "$TMUX_BIN" list-windows -t "=$sess" \
+      -F 'window=#{window_index}|#{window_name}|#{window_layout}' 2>/dev/null
+    # Pane order is the restore order, so it is listed in tmux's order and
+    # matched back positionally.
+    local pid widx label agent path rid
+    while IFS='|' read -r pid widx label agent path; do
+      [ -n "$pid" ] || continue
+      rid=$(resume_id_of "$pid" 2>/dev/null || true)
+      printf 'pane=%s|%s|%s|%s|%s\n' "$widx" "$label" "$agent" "$path" "$rid"
+    done < <("$TMUX_BIN" list-panes -s -t "=$sess" \
+      -F '#{pane_id}|#{window_index}|#{@label}|#{@agent}|#{pane_current_path}' 2>/dev/null)
+  } > "$f.tmp" 2>/dev/null && mv "$f.tmp" "$f" 2>/dev/null || { rm -f "$f.tmp"; return 1; }
+
+  snapshot_prune "$dir"
+  printf '%s' "$f"
+}
+
+# The newest snapshot for a session, or nothing.
+snapshot_newest() {
+  local sess=$1 dir f newest= newest_stamp=0 base stamp
+  dir=$SNAPSHOT_DIR/$(plat_host 2>/dev/null || echo local)
+  [ -d "$dir" ] || return 1
+  for f in "$dir/$sess"-*.conf; do
+    [ -e "$f" ] || continue
+    base=${f##*/}; stamp=${base%.conf}; stamp=${stamp##*-}
+    case $stamp in ''|*[!0-9]*) continue ;; esac
+    [ "$stamp" -gt "$newest_stamp" ] && { newest_stamp=$stamp; newest=$f; }
+  done
+  [ -n "$newest" ] || return 1
+  printf '%s' "$newest"
+}
+
 # Fills in SPECS and the build options, but never overrides a flag the user
 # typed on this invocation — restoring with a tweak should be one flag, not a
 # manifest edit. Returns non-zero when there is nothing to read.
@@ -1173,9 +1368,17 @@ conf_read() {
       # Louder than a silent misreading, quieter than refusing to work: a
       # newer msesh's file is likely still mostly readable, and saying which
       # file and which version beats a build that comes out subtly wrong.
+      #
+      # Only a *newer* file is worth saying anything about. Reading an older
+      # one is the ordinary case after an upgrade — every manifest on disk is
+      # written by whatever msesh built it — and warning about those would put
+      # a line of noise in front of every restore anyone had recorded before.
       version)
-        [ "$val" = "$MSESH_FORMAT" ] ||
-          echo "msesh: $f is format $val, this msesh knows $MSESH_FORMAT — reading it anyway" >&2 ;;
+        case $val in
+          ''|*[!0-9]*) echo "msesh: $f has a non-numeric version '$val' — reading it anyway" >&2 ;;
+          *) [ "$val" -le "$MSESH_FORMAT" ] ||
+               echo "msesh: $f is format $val, this msesh knows $MSESH_FORMAT — reading it anyway" >&2 ;;
+        esac ;;
     esac
   done < "$f"
   return 0
@@ -1548,7 +1751,8 @@ case $ACTION in
       buildable) { layout_names; printf '%s\n' ${PRESET_NAMES[@]+"${PRESET_NAMES[@]}"}
                    "$TMUX_BIN" list-sessions -F '#S' 2>/dev/null; } 2>/dev/null | sort -u ;;
       restorable) { layout_names; manifest_names; } 2>/dev/null | sort -u ;;
-      topics)   printf '%s\n' specs options preset layout agents files env ;;
+      topics)   printf '%s
+' specs options preset layout agents hooks resume files env ;;
       *) : ;;
     esac
     exit 0 ;;
@@ -2027,8 +2231,25 @@ PY
       *) die "no layout command '$LAYOUT_SUB' (msesh help layout)" ;;
     esac
     exit 0 ;;
+  snapshot)
+    session_exists "$SESSION" ||
+      die "no session '$SESSION' to snapshot — a snapshot is taken from a live session (msesh list)"
+    snap=$(snapshot_write "$SESSION") ||
+      die "could not write a snapshot of '$SESSION'"
+    resumable=$(grep -c '^pane=.*|[^|]\{8,\}$' "$snap" 2>/dev/null || echo 0)
+    panes=$(grep -c '^pane=' "$snap" 2>/dev/null || echo 0)
+    echo "msesh: snapshot of '$SESSION' — $panes pane(s), $resumable with a conversation to resume"
+    echo "msesh: $snap"
+    [ "$resumable" = 0 ] && [ "$panes" != 0 ] &&
+      echo "msesh: no conversations recorded yet — 'msesh hooks install' is what records them"
+    exit 0 ;;
   kill)
     if session_exists "$SESSION"; then
+      # Snapshotted before it dies, not after: this is the last moment the
+      # conversation ids and the geometry exist to be read, and killing is how
+      # a session normally ends. Failure here never blocks the kill — a
+      # session you asked to go away has to go away.
+      snapshot_write "$SESSION" >/dev/null 2>&1 || true
       "$TMUX_BIN" kill-session -t "=$SESSION"
       echo "msesh: killed '$SESSION'"
     else
@@ -2090,7 +2311,13 @@ fi
 # work` should simply bring work back rather than ask you to re-describe it.
 # Options typed on this invocation still win over either file.
 if [ "$RESTORE" = 1 ]; then
+  # A snapshot is the last fallback, and only because it carries the same keys:
+  # a session that was killed and then forgotten still has its snapshots, and
+  # refusing to bring one back when the description of it is sitting right
+  # there would be a rule with nothing behind it.
   manifest_load "$SESSION" || layout_load "$SESSION" ||
+    { snapfallback=$(snapshot_newest "$SESSION" 2>/dev/null || true)
+      [ -n "$snapfallback" ] && conf_read "$snapfallback"; } ||
     die "no manifest or layout for '$SESSION' (msesh list shows what is known)"
 elif [ "${#SPECS[@]}" -eq 0 ] && ! session_exists "$SESSION"; then
   # An if rather than `manifest_load && echo`: that list's status is the whole
@@ -2122,6 +2349,7 @@ case $NOTIFY_SILENCE in ''|*[!0-9]*) die "--notify needs seconds, got '$NOTIFY_S
 # preset; anything still pending at the end becomes default-preset panes.
 PANE_CMD=()      # command each pane runs
 PANE_LABEL=()    # what the pane border says
+PANE_DIR=()      # where it starts; empty means the session's --dir
 
 pending=
 
@@ -2226,6 +2454,62 @@ if [ "${#EFFORTS[@]}" -gt 0 ]; then
   done
 fi
 
+# --- resuming the conversation, not just the shape ----------------------------
+# Without this, 'restore' brings back four panes that have forgotten everything
+# they were doing. The ids come from the newest snapshot of this session and are
+# matched to panes positionally, which is the only correspondence there is: a
+# pane has no identity across a kill, only a place in the order.
+#
+# Per pane, and never fatal. Three resumable panes and one fresh is the normal
+# outcome — a pane that was never started has no conversation, and a restore
+# that refused because of that would be useless exactly when it is needed.
+RESUMED=0 RESUME_SKIPPED=0
+RESUME_IDS=(); RESUME_DIRS=(); RESUME_LAYOUTS=()
+if [ "$RESUME" = 1 ] && [ "$RESTORE" != 1 ]; then
+  die "--resume goes with restore: 'msesh restore $SESSION --resume'"
+fi
+if [ "$RESUME" = 1 ]; then
+  snapfile=$(snapshot_newest "$SESSION" 2>/dev/null || true)
+  if [ -z "$snapfile" ]; then
+    echo "msesh: no snapshot of '$SESSION' — restoring it fresh" >&2
+    echo "msesh: snapshots are taken on 'msesh kill' and by 'msesh snapshot'" >&2
+  else
+    while IFS= read -r line || [ -n "$line" ]; do
+      case ${line%%$'\r'} in
+        pane=*) line=${line#pane=}
+                # window|label|agent|cwd|id — the id is the last field, and the
+                # cwd the one before it.
+                RESUME_IDS+=("${line##*|}")
+                line=${line%|*}
+                RESUME_DIRS+=("${line##*|}") ;;
+        window=*) line=${line#window=}
+                # index|name|layout — the layout string contains no '|'
+                RESUME_LAYOUTS+=("${line##*|}") ;;
+      esac
+    done < "$snapfile"
+
+    for i in "${!PANE_CMD[@]}"; do
+      # A recorded directory is worth restoring even when the conversation is
+      # not: a pane that comes back in the wrong repository is wrong whether or
+      # not it remembers anything.
+      if [ "$i" -lt "${#RESUME_DIRS[@]}" ] && [ -d "${RESUME_DIRS[$i]}" ]; then
+        PANE_DIR[$i]=${RESUME_DIRS[$i]}
+      fi
+      [ "$i" -lt "${#RESUME_IDS[@]}" ] || { RESUME_SKIPPED=$((RESUME_SKIPPED + 1)); continue; }
+      rid=${RESUME_IDS[$i]}
+      [ -n "$rid" ] || { RESUME_SKIPPED=$((RESUME_SKIPPED + 1)); continue; }
+      agent=$(agent_of_cmd "${PANE_CMD[$i]}") || { RESUME_SKIPPED=$((RESUME_SKIPPED + 1)); continue; }
+      rflag=$(agent_field "$agent" resume)
+      # An agent with no way to be resumed is not an error; it just starts
+      # fresh, the same as a pane whose conversation was never recorded.
+      [ -n "$rflag" ] || { RESUME_SKIPPED=$((RESUME_SKIPPED + 1)); continue; }
+      PANE_CMD[$i]="${PANE_CMD[$i]} $rflag$rid"
+      PANE_LABEL[$i]="${PANE_LABEL[$i]}~"
+      RESUMED=$((RESUMED + 1))
+    done
+  fi
+fi
+
 # Two different questions, kept apart on purpose. HAS_AGENT is "is anything in
 # here slow to start", which is what --lazy is about; HAS_CLAUDE is only ever
 # used for the workspace-trust pre-seed, which really is a Claude Code file
@@ -2298,6 +2582,8 @@ if [ "$DRY_RUN" = 1 ]; then
   printf '\n'
   [ "$PRESEED_TRUST" = 1 ] && [ "$HAS_CLAUDE" = 1 ] &&
     echo "  would pre-seed workspace trust for $WORKDIR"
+  [ "$RESUME" = 1 ] &&
+    echo "  $RESUMED pane(s) would resume a conversation, $RESUME_SKIPPED would start fresh"
   echo "msesh: nothing was built (--dry-run)"
   exit 0
 fi
@@ -2406,6 +2692,9 @@ else
   for i in "${!PANE_CMD[@]}"; do
     cmd=${PANE_CMD[$i]}
     label=${PANE_LABEL[$i]}
+    # Per-pane, falling back to the session's directory. Only a restore that
+    # read a snapshot ever sets this; every other build has one directory.
+    pdir=${PANE_DIR[$i]:-$WORKDIR}
 
     lazy=0
     [ "$EAGER" = 0 ] && agent_of_cmd "$cmd" >/dev/null && lazy=1
@@ -2422,18 +2711,18 @@ else
       WINDOWS+=("$wname")
       winno=$((winno + 1))
       if [ "$EXISTED" = 1 ] || [ "${#WINDOWS[@]}" -gt 1 ]; then
-        "$TMUX_BIN" new-window -d -t "=$SESSION" -n "$wname" -c "$WORKDIR" "$launch"
+        "$TMUX_BIN" new-window -d -t "=$SESSION" -n "$wname" -c "$pdir" "$launch"
         # -d leaves the old window current; select it so the splits below and
         # the "active pane" targeting land in the right place.
         "$TMUX_BIN" select-window -t "$SESSION:$wname"
       else
-        "$TMUX_BIN" new-session -d -s "$SESSION" -n "$wname" -c "$WORKDIR" "$launch"
+        "$TMUX_BIN" new-session -d -s "$SESSION" -n "$wname" -c "$pdir" "$launch"
       fi
       EXISTED=1                     # from here on the session is definitely up
     else
       # Not ${WINDOWS[-1]}: negative subscripts need bash 4.2, macOS ships 3.2.
       wname=${WINDOWS[$(( ${#WINDOWS[@]} - 1 ))]}
-      "$TMUX_BIN" split-window -t "$SESSION:$wname" -c "$WORKDIR" "$launch"
+      "$TMUX_BIN" split-window -t "$SESSION:$wname" -c "$pdir" "$launch"
     fi
 
     # The pane just created is the active one in its window, so target the
@@ -2453,6 +2742,21 @@ else
     fi
     "$TMUX_BIN" select-layout -t "$WIN" tiled >/dev/null
   done
+
+  # Geometry last, and only when a snapshot recorded some. Tiling is the right
+  # default for a session being built, but a session being *restored* was
+  # last seen at whatever sizes its owner dragged it to, and coming back evenly
+  # tiled loses that. Applied per window, positionally, and ignored when it
+  # does not take — a layout string from a differently sized terminal is a
+  # cosmetic loss, not a reason to fail a restore.
+  if [ "$RESUME" = 1 ] && [ "${#RESUME_LAYOUTS[@]}" -gt 0 ]; then
+    for wi in "${!WINDOWS[@]}"; do
+      [ "$wi" -lt "${#RESUME_LAYOUTS[@]}" ] || break
+      lay=${RESUME_LAYOUTS[$wi]}
+      [ -n "$lay" ] || continue
+      "$TMUX_BIN" select-layout -t "$SESSION:${WINDOWS[$wi]}" "$lay" >/dev/null 2>&1 || true
+    done
+  fi
 
   # Pane indexes depend on pane-base-index, so read it rather than assume 0. It
   # is a window option, so -w is required. Read it here, not before the build:

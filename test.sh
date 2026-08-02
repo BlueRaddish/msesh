@@ -194,6 +194,59 @@ printf 'version=99\nspec=1\nspec=bash\ndir=%s\n' "$HOME" > "$MSESH_STATE/future.
 check "a newer format warns"           "is format 99" -- restore future -n
 check "but is still read"              "1 pane(s)"    -- restore future -n
 
+echo "resuming a conversation"
+# Snapshots are normally written from a live session. These are hand-built so
+# the whole resume path can be tested without a tmux server — what is being
+# checked is the matching, not tmux's ability to list panes.
+SNAPDIR=$MSESH_STATE/snapshots/$(bash -c ". '$(dirname "$MSESH")/msesh-platform'; plat_host")
+mkdir -p "$SNAPDIR"
+{
+  printf 'version=2\nsnapshot=%s\n' "$(date +%s)"
+  printf 'dir=%s\nspec=2\nspec=claude\n' "$HOME"
+  printf 'window=1|m1|d44e,80x24,0,0[80x11,0,0,60,80x12,0,12,61]\n'
+  printf 'pane=1|claude|claude|%s|aaaaaaaa-1111-4444-8888-cccccccccccc\n' "$HOME"
+  printf 'pane=1|claude|claude|%s|bbbbbbbb-2222-4444-8888-cccccccccccc\n' "$HOME"
+} > "$SNAPDIR/resumed-$(date +%s).conf"
+
+check "--resume reopens the recorded conversation" \
+      "--resume aaaaaaaa-1111"                    -- restore resumed --resume -n
+check "each pane gets its own conversation" \
+      "--resume bbbbbbbb-2222"                    -- restore resumed --resume -n
+check "resumed panes are marked in the label"  "claude~" -- restore resumed --resume -n
+check "and it says how many came back"  "2 pane(s) would resume" -- restore resumed --resume -n
+missing "a plain restore stays fresh"   "--resume aaaaaaaa" -- restore resumed -n
+check "--resume needs restore"          "--resume goes with restore" -- build 2 claude --resume -n
+
+# The failure this guards: a pane with no recorded conversation must start
+# fresh rather than fail the restore, or one unstarted agent would make the
+# whole session unrestorable.
+{
+  printf 'version=2\nsnapshot=%s\n' "$(date +%s)"
+  printf 'dir=%s\nspec=3\nspec=claude\n' "$HOME"
+  printf 'pane=1|claude|claude|%s|\n' "$HOME"
+  printf 'pane=1|claude|claude|%s|dddddddd-3333-4444-8888-cccccccccccc\n' "$HOME"
+  printf 'pane=1|claude|claude|%s|\n' "$HOME"
+} > "$SNAPDIR/partial-$(date +%s).conf"
+check "a pane with no conversation starts fresh" \
+      "1 pane(s) would resume a conversation, 2 would start fresh" \
+                                                  -- restore partial --resume -n
+check "while its neighbour still resumes" "--resume dddddddd-3333" -- restore partial --resume -n
+# A recorded session that was never snapshotted: --resume has nothing to work
+# from, and the restore has to go ahead anyway rather than refuse.
+printf 'version=2\ndir=%s\nspec=2\nspec=claude\n' "$HOME" > "$MSESH_STATE/nosnap.conf"
+check "a session with no snapshot says so" \
+      "no snapshot of 'nosnap'"                   -- restore nosnap --resume -n
+check "and restores fresh anyway"     "2 pane(s)" -- restore nosnap --resume -n
+check "with nothing claimed as resumed" \
+      "0 pane(s) would resume"                    -- restore nosnap --resume -n
+check "a session that is not known at all is still refused" \
+      "no manifest or layout for 'ghostsess'"     -- restore ghostsess --resume -n
+
+echo "the format version"
+printf 'version=1\ndir=%s\nspec=1\nspec=bash\n' "$HOME" > "$MSESH_STATE/older.conf"
+missing "an older manifest reads without a warning" "is format 1" -- restore older -n
+check "and still restores"             "1 pane(s)"  -- restore older -n
+
 # --- portability ---------------------------------------------------------------
 # These two guard the invariant the platform layer exists for. They are not
 # about behaviour, so they do not use `check`; they read the source.
@@ -265,7 +318,7 @@ missing_fn=
 for fn in plat_os plat_is_windows plat_tmux plat_bootstrap plat_bootstrap_argv \
           plat_open_tab plat_tab_opener plat_notify plat_notifier \
           plat_native_path plat_config_home plat_checksum plat_path_check \
-          plat_path_hint plat_shell_presets; do
+          plat_path_hint plat_shell_presets plat_host; do
   grep -q "^$fn()" "$SRC/msesh-platform" || missing_fn="$missing_fn $fn"
 done
 if [ -n "$missing_fn" ]; then
@@ -292,12 +345,12 @@ done
 # is not on the front page and has no topic is a verb nobody finds.
 echo "help"
 
-for t in specs options preset layout agents hooks files env; do
+for t in specs options preset layout agents hooks resume files env; do
   check "topic '$t' resolves" "" -- help "$t"
 done
 check "an unknown topic lists the real ones" "topics: specs" -- help nope
 
-for v in build rebuild add attach restore kill forget list status send doctor \
+for v in build rebuild add attach restore kill snapshot forget list status send doctor \
          hooks preset layout; do
   check "the front page lists '$v'" "  $v" -- help
 done
@@ -308,7 +361,7 @@ check "the front page shows --version" "--version" -- help
 # catch it — this file exists because it drifted twice in one day.
 echo "help conformance"
 
-for t in "" specs options preset layout agents hooks files env; do
+for t in "" specs options preset layout agents hooks resume files env; do
   out=$("$MSESH" help $t 2>/dev/null)
   label=${t:-main}
 
@@ -329,7 +382,7 @@ for t in "" specs options preset layout agents hooks files env; do
   esac
 done
 
-for t in "" specs options preset layout agents hooks files env; do
+for t in "" specs options preset layout agents hooks resume files env; do
   out=$("$MSESH" help $t 2>/dev/null)
   label=${t:-main}
 
@@ -418,7 +471,7 @@ while IFS= read -r ex; do
   \$ $ex -> rc=$rc" ;;
   esac
 done <<EOF
-$(for t in "" specs options preset layout agents hooks files env; do
+$(for t in "" specs options preset layout agents hooks resume files env; do
     "$MSESH" help $t 2>/dev/null
   done | sed -n 's/^[[:space:]]*\$ \(msesh .*\)$/\1/p' | awk '!seen[\$0]++')
 EOF
@@ -431,8 +484,12 @@ for want in NAME USAGE DESCRIPTION EXAMPLES COMMANDS OPTIONS "EXIT STATUS"      
 done
 
 echo "the version key is written"
+# Read off the script rather than written out here: this test existed to prove
+# the key is present, and hardcoding the number turned the first format bump
+# into a test failure that said nothing about what had broken.
+FMT=$(sed -n 's/^MSESH_FORMAT=\([0-9][0-9]*\)$/\1/p' "$SRC/msesh")
 "$MSESH" layout make v 1 bash -d "$HOME" >/dev/null
-check "layouts carry a version"        "version=1"    -- layout show v
+check "layouts carry a version"        "version=$FMT" -- layout show v
 
 echo
 if [ "$FAIL" = 0 ]; then
