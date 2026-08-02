@@ -37,7 +37,11 @@ export CLAUDE_BIN=claude CLAUDE_FLAGS=--remote-control
 mkdir -p "$MSESH_STATE" "$MSESH_LAYOUTS"
 trap 'rm -rf "$ROOT"' EXIT
 
+# The agent presets are defined here rather than relied on: built-in agent
+# presets only exist when the binary is installed, and a CI runner has none.
+# The command name is what makes a pane an agent pane, so these are enough.
 cat > "$MSESH_PRESETS" <<'EOF'
+claude = claude
 kode   = codex --full-auto
 gem    = gemini
 pinned = claude --effort xhigh
