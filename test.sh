@@ -268,6 +268,23 @@ for os in linux macos windows wsl; do
   esac
 done
 
+# --- help ----------------------------------------------------------------------
+# There was no coverage here at all until v1.1.0, which is exactly why the front
+# page still promised a Windows Terminal tab two releases after that stopped
+# being true, and why two options added in 0.6.0 were never listed. A verb that
+# is not on the front page and has no topic is a verb nobody finds.
+echo "help"
+
+for t in specs options preset layout agents hooks files env; do
+  check "topic '$t' resolves" "" -- help "$t"
+done
+check "an unknown topic lists the real ones" "topics: specs" -- help nope
+
+for v in build rebuild add attach restore kill forget list status send doctor \
+         hooks preset layout version; do
+  check "the front page lists '$v'" "  $v" -- help
+done
+
 echo "the version key is written"
 "$MSESH" layout make v 1 bash -d "$HOME" >/dev/null
 check "layouts carry a version"        "version=1"    -- layout show v

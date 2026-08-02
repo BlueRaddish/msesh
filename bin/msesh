@@ -246,8 +246,9 @@ EOF
 
 help_main() {
   cat <<EOF
-msesh — a tmux session of N panes in a new Windows Terminal tab, each pane
-running a preset: a claude session, a shell, or anything you name yourself.
+msesh — a tmux session of N panes in a new terminal tab, each pane running a
+preset: an agent, a shell, or anything you name yourself. Runs on Linux, macOS,
+Windows and WSL.
 
 usage: msesh <command> [options] [specs]
 
@@ -275,8 +276,8 @@ OPTIONS you will actually type
   -e, --effort LIST    effort for agent panes: 'ladder', or l,m,h,x in order
   -w, --width N        max panes per window before spilling (default: 4)
 
-  The rest — --lazy, --notify, --no-tab, --ephemeral, --no-trust — are in
-  'msesh help options'.
+  The rest — --lazy, --notify, --windows, --dry-run, --no-tab, --ephemeral,
+  --no-trust — are in 'msesh help options'.
 
 EXAMPLES
   msesh build 4                     four claude panes here
@@ -294,6 +295,7 @@ HELP TOPICS
   msesh help preset     the preset commands and the presets file
   msesh help layout     naming a whole session and building it back
   msesh help agents     which commands count as an agent, and their effort
+  msesh help hooks      how a pane reports that its turn ended
   msesh help files      where presets, layouts and manifests live
   msesh help env        environment variables msesh honours
 EOF
@@ -362,10 +364,17 @@ OPTIONS — all of them. Only build, rebuild and add use the pane ones.
                          (default: 20, 0 = off)
         --no-notify      same as --notify 0
 
+    Silence is the fallback signal, not the good one. An agent that has told
+    msesh its turn ended is exact and immediate; silence is a guess, late by
+    the whole timeout and wrong in both directions. Run 'msesh hooks install'
+    once and agent panes report for themselves — see 'msesh help hooks'.
+    These options still govern everything that is not an agent: a build, a
+    test run, a REPL, none of which will ever call a hook.
+
     A toast is gone in seconds and does not say where to look, so the alert
     is also shown in three places that stay put until you deal with it:
 
-      the tab       the Windows Terminal tab title becomes
+      the tab       the terminal tab title becomes
                     '(!) msesh: NAME — window 2 waiting'
       the status    the waiting window is red, with a '!', in tmux's status bar
       the block     every pane border in that window turns red and says
@@ -514,6 +523,41 @@ windows, alerts, layouts — is the same whatever is running in the pane.
 EOF
 }
 
+help_hooks() {
+  cat <<EOF
+HOOKS — how a pane tells msesh its turn has ended.
+
+  msesh hooks status     is it installed, and what else is in that file
+  msesh hooks install    add it
+  msesh hooks remove     take it out again
+  msesh hooks --dry-run  with install or remove: print, write nothing
+
+By default msesh infers "waiting on you" from silence: a pane that has printed
+nothing for --notify seconds has, in practice, finished. That is a guess. It is
+late by the length of the timeout, and wrong in both directions — an agent
+thinking quietly looks finished, and one printing steadily never alerts.
+
+Claude Code will just tell you. 'hooks install' adds a Stop hook to
+  $CLAUDE_SETTINGS
+which runs msesh-notify the moment a turn ends. The pane is marked, its window
+lights up, and 'msesh status' shows it as WAITING. Silence monitoring stays on
+for panes that are not agents, where it was always the right signal.
+
+That file belongs to Claude Code, not to msesh, and usually holds hooks you
+wrote yourself. So this command:
+
+  * only ever appends — it does not rewrite, reorder or drop an entry it did
+    not create
+  * tags everything it writes with "_msesh", so remove takes exactly its own
+  * copies the file to settings.json.msesh-backup before writing
+  * parses what it wrote before letting it replace anything
+  * changes nothing on a second install
+
+An install followed by a remove leaves the file byte-identical. 'hooks status'
+never writes at all.
+EOF
+}
+
 help_files() {
   local presets=${MSESH_PRESETS:-$(plat_config_home)/presets.conf}
   local state=${MSESH_STATE:-$(plat_config_home)/sessions}
@@ -581,11 +625,12 @@ help_topic() {
     preset|presets)               help_preset ;;
     layout|layouts|session)       help_layout ;;
     agent|agents)                 help_agents ;;
+    hook|hooks)                   help_hooks ;;
     file|files|manifest|manifests) help_files ;;
     env|environment|vars)         help_env ;;
     build|rebuild|add)            help_specs; echo; help_options ;;
     *) echo "msesh: no help topic '$1'" >&2
-       echo "topics: specs, options, preset, layout, agents, files, env" >&2
+       echo "topics: specs, options, preset, layout, agents, hooks, files, env" >&2
        exit 1 ;;
   esac
 }
