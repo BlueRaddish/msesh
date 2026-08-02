@@ -141,7 +141,11 @@ missing "and does not leave the old one" "/code-review" -- preset show review
 check "preset show prints the command" "claude"       -- preset show review
 check "removing it is reported"       "removed preset 'review'" -- preset remove review
 check "and then it is gone"           "unknown preset 'review'" -- build 1 review -n $D
-check "a built-in cannot be removed"  "is a built-in" -- preset remove claude
+# 'shell', not 'claude': agent presets only exist where the agent is installed,
+# so on a machine without one 'preset remove claude' would remove the fixture
+# this file wrote and every layout test after it would fail. 'shell' is built in
+# everywhere.
+check "a built-in cannot be removed"  "is a built-in" -- preset remove shell
 check "user presets survived the rewrite" "codex --full-auto" -- preset show kode
 
 echo "layouts"

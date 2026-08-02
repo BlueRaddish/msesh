@@ -1803,7 +1803,7 @@ PY
           # A removed override uncovers the built-in underneath it, which is a
           # surprise unless it is said out loud.
           case $pname in
-            claude|cly|plan|safe|bash|sh|pwsh|ps|cmd)
+            shell|bash|sh|zsh|fish|pwsh|ps|cmd|claude|codex|gemini|aider)
               echo "msesh: '$pname' is a built-in again — see 'msesh preset show $pname'" ;;
           esac
         elif preset_get "$pname" >/dev/null; then
