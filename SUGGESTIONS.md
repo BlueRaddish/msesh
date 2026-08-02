@@ -8,9 +8,11 @@ than by topic, so it can be read top to bottom and approved by range ("do P1–P
 Numbers are positions in that order and will move; the `§` in each heading is the
 stable id the PARA doc and commit messages refer to.
 
-Current state for reference: v0.6.0 — verb-first CLI, presets for one pane and
-layouts for a whole session, an agent table behind `-e`, `--dry-run`, `status`,
-`send`, `doctor`, tab completion in two shells, and a test script.
+Current state for reference: **v1.1.0** — verb-first CLI, presets for one pane
+and layouts for a whole session, an agent table behind `-e`, `--dry-run`,
+`status`, `send`, `doctor`, tab completion in two shells, a 92-check test
+script, and — since v1.0.0 — Linux, macOS, Windows and WSL support proven by CI
+on all three.
 
 **Built and removed from this list:** layouts as a first-class thing (§2.2),
 saving a session as a layout (§2.1, from its manifest), the agent registry
@@ -18,11 +20,17 @@ saving a session as a layout (§2.1, from its manifest), the agent registry
 `--dry-run` (§5.3), `test.sh` (§6.2), shell completion (§4.1), named windows
 (§5.2), `msesh status` (§4.3), `msesh doctor` (§4.2) and `msesh send` (§5.1).
 
+**Shipped since, from the portability plan rather than this list**
+(`~/claude/para/1-Projects/msesh/PLAN-portable-msesh-v1.md`): the platform layer
+and CI matrix in v1.0.0, and the turn-end hook in v1.1.0 — which retired the
+"Claude Code exposes no completion signal" premise that shaped everything up to
+v0.6.0. Silence monitoring is now the fallback for panes that are not agents.
+
 ## At a glance
 
 | | | Cost | Why here |
 |---|---|---|---|
-| **P1** | Implicit build §1.1 | tiny | Deliberately waiting on the verbs settling — and they just moved again |
+| **P1** | Implicit build §1.1 | tiny | Waiting on the verbs settling — `hooks` moved them again in 1.1.0 |
 | **P2** | Built-in presets for other agents §3.2 | small | Nothing to gain until one is installed |
 | **P3** | Snapshot a live session §2.1 | medium | Only if hand-split sessions turn out to be common |
 | **P4** | Per-pane settings in a layout §2.3 | medium | Resist until the need is concrete |
@@ -50,8 +58,9 @@ as `msesh build list` — and worse, a *typo* that happens to match a preset nam
 silently builds something instead of being corrected.
 
 Deliberately conditional: do it once the command names have settled and stopped
-moving, not before. `layout` arrived in 0.5.0 and `status`, `send` and `doctor`
-in 0.6.0, so the clock has been reset twice — this is further off than it was.
+moving, not before. `layout` arrived in 0.5.0, `status`, `send` and `doctor` in
+0.6.0, and `hooks` in 1.1.0 — the clock has been reset three times, so this is
+further off than when it was written, not closer.
 
 ## P2 — Built-in presets for codex, gemini, aider, copilot §3.2
 

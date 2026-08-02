@@ -23,7 +23,7 @@ $ msesh attach work                    # later: back to 'work', rebuilt if it di
 
 **Sized.** Any pane count, not a fixed grid. Panes tile up to four per window, then spill into new tmux windows (`prefix+n` / `prefix+p` to move between them). `-w` changes the threshold, `-w 0` crams everything into one window.
 
-**Noisy, and specific about it.** A pane that stops producing output has usually finished its turn and is waiting on you. msesh wires tmux's silence monitor to a desktop notification — and because a toast is gone in seconds and does not say where to look, it marks the waiting window in three places that stay until you deal with them:
+**Noisy, and specific about it.** Run `msesh hooks install` once and a Claude pane reports the end of its turn the moment it happens. Everything else — a build, a test run, a REPL — falls back to tmux's silence monitor: a pane that has printed nothing for a while has usually finished. Either way, because a toast is gone in seconds and does not say where to look, msesh marks the waiting window in three places that stay until you deal with them:
 
 - **the tab** — the terminal tab title becomes `(!) msesh: work — window 2 waiting`, so an unfocused tab advertises itself
 - **the status bar** — the waiting window turns red, with a `!`
@@ -280,7 +280,7 @@ work:
 
 "Waiting" is per window, because tmux's silence flag is: a window counts as silent only once every pane in it is. Whether a *pane* has finished is recorded by the pane itself as its command exits — tmux can only report the wrapper shell, so asking it from outside cannot tell a working pane from a finished one.
 
-`msesh doctor` checks the machine rather than the session: tmux, MSYS2, Windows Terminal, whether the install directory is on the **User `PATH` in the registry** (the failure that makes msesh work in bash and look broken everywhere else), whether the installed copy has drifted from your clone, and whether the config files and directories are readable and writable.
+`msesh doctor` checks the machine rather than the session: which platform it resolved to, tmux, which terminal and notifier it will use, whether the turn-end hook is installed, whether the install directory is really on `PATH` (checked the way that platform means it — a shell rc on Unix, the User `PATH` in the registry on Windows), whether the installed copy has drifted from your clone, and whether the config files and directories are readable and writable.
 
 ## Talking to every pane at once
 
@@ -306,7 +306,9 @@ Both ask `msesh complete-names KIND`, which prints one name per line and nothing
 
 ## Tests
 
-`./test.sh` — 60 checks over spec resolution, effort against the agent table, layout resolution, the preset file rewrite and the manifest round-trip. Everything goes through `--dry-run`, so no tmux session is built and the run takes about a second. `-v` lists each check.
+`./test.sh` — 92 checks over spec resolution, effort against the agent table, layout resolution, the preset file rewrite, the manifest round-trip, the portability invariants, and whether the help still describes the tool. Everything goes through `--dry-run`, so no tmux session is built and the run takes about a second. `-v` lists each check.
+
+CI runs the same suite on Linux, macOS and MSYS2 on every push — the macOS job deliberately uses `/bin/bash`, which is bash 3.2, because that is the bash a Mac user actually has.
 
 ## Configuration
 
@@ -315,11 +317,16 @@ Everything machine-specific is an environment variable, so msesh should work on 
 | Variable | Purpose |
 |---|---|
 | `CLAUDE_BIN`, `CLAUDE_FLAGS` | the Claude executable and its default flags |
-| `MSESH_BASH`, `MSESH_MSYS_ROOT` | where MSYS2 lives, if it is somewhere unusual |
+| `MSESH_OS` | override platform detection (`linux`, `macos`, `windows`, `wsl`) |
+| `MSESH_TERMINAL`, `TERMINAL` | the terminal to open a session in, tried before the search |
+| `MSESH_NOTIFY_CMD` | a command taking TITLE BODY, tried before the search |
+| `MSESH_MSYS_ROOT` | Windows: where MSYS2 lives, if it is somewhere unusual |
 | `MSESH_PRESETS`, `MSESH_AGENTS` | presets and agents files |
 | `MSESH_LAYOUTS`, `MSESH_STATE` | layout directory and manifest directory |
 | `MSESH_DEFAULT_PRESET` | what a bare `msesh build 4` launches |
-| `TMUX_BIN`, `WT_BIN`, `WT_PROFILE` | tmux and Windows Terminal binaries and profile |
+| `TMUX_BIN` | tmux, if it is not where the search would find it |
+| `WT_BIN`, `WT_PROFILE` | Windows: Terminal binary and the profile a tab uses |
+| `CLAUDE_SETTINGS` | Claude Code's settings.json, for `msesh hooks` |
 | `MSESH_HIGHLIGHT` | `0` to stop marking a waiting window in the tab title, status bar and pane borders |
 
 `msesh help env` lists the lot.
