@@ -54,7 +54,7 @@ cat > "$MSESH_AGENTS" <<'EOF'
 myagent = --reasoning | quick,deep
 EOF
 
-PASS=0 FAIL=0
+PASS=0 FAIL=0 SKIP=0
 
 # The whole harness: run msesh, keep stdout and stderr together, and look for
 # a substring. Substrings rather than whole-output comparison on purpose —
@@ -262,6 +262,15 @@ port_fail() {
 }
 port_ok() { PASS=$((PASS + 1)); [ "$VERBOSE" = 1 ] && printf '  ok   %s\n' "$1"; return 0; }
 
+# Always printed, never counted as a pass. A check that could not run is not a
+# check that succeeded, and the difference has been invisible three times now:
+# once in a worktree, once on macOS, once on the MSYS2 CI job.
+port_skip() {
+  SKIP=$((SKIP + 1))
+  printf '  SKIP %s — %s\n' "$1" "$2"
+  return 0
+}
+
 SRC=$(cd "$(dirname "$MSESH")" && pwd)
 
 # Comment lines are exempt: explaining *why* cmd.exe needs a handover is
@@ -298,8 +307,16 @@ fi
 # Asked of git rather than by looking for a .git directory: in a linked
 # worktree .git is a *file*, so the directory test quietly skipped this guard
 # in exactly the checkouts where work happens.
-if command -v git >/dev/null 2>&1 &&
-   git -C "$SRC/.." rev-parse --git-dir >/dev/null 2>&1; then
+#
+# A skipped check says so out loud. It used to just vanish, which is how it went
+# unnoticed that it never ran in a worktree, and then that it never ran on the
+# MSYS2 CI job either — the one platform whose treatment of the exec bit causes
+# the bug in the first place. An invisible skip is a check you think you have.
+if ! command -v git >/dev/null 2>&1; then
+  port_skip "scripts are executable in git" "no git on PATH"
+elif ! git -C "$SRC/.." rev-parse --git-dir >/dev/null 2>&1; then
+  port_skip "scripts are executable in git" "not a git checkout"
+else
   notexec=$(cd "$SRC/.." && git ls-files -s bin/msesh bin/msesh-notify \
               install.sh test.sh 2>/dev/null | grep -v '^100755' || true)
   if [ -n "$notexec" ]; then
@@ -516,9 +533,13 @@ FMT=$(sed -n 's/^MSESH_FORMAT=\([0-9][0-9]*\)$/\1/p' "$SRC/msesh")
 check "layouts carry a version"        "version=$FMT" -- layout show v
 
 echo
+# Skips are reported in the summary as well as inline: a run that quietly does
+# less than the last one should be obvious from the last line alone.
+summary="$PASS passed"
+[ "$SKIP" != 0 ] && summary="$summary, $SKIP skipped"
 if [ "$FAIL" = 0 ]; then
-  echo "$PASS passed"
+  echo "$summary"
 else
-  echo "$PASS passed, $FAIL failed"
+  echo "$summary, $FAIL failed"
   exit 1
 fi

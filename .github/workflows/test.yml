@@ -46,6 +46,10 @@ jobs:
         with:
           msystem: UCRT64
           update: false
-          install: tmux
+          # git as well as tmux: the suite's exec-bit guard asks git for the
+          # recorded mode, and without git in *this* shell it skipped itself —
+          # on the one platform whose handling of the exec bit is the reason
+          # the guard exists.
+          install: tmux git
       - run: tmux -V && bash --version | head -1
       - run: ./test.sh
