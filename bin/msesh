@@ -1609,14 +1609,22 @@ case $ACTION in
     NOTIFIER=${MSESH_NOTIFIER:-$SELF_DIR/msesh-notify}
     # An absolute path, resolved now: the hook runs in the agent's environment,
     # which may not have this directory on PATH at all.
-    hook_cmd="\"$NOTIFIER\" --turn-end"
     dry=0
     case " ${ARGS[*]} " in *" --dry-run "*) dry=1 ;; esac
-    "$py" - "$CLAUDE_SETTINGS" "$HOOKS_SUB" "$hook_cmd" "$dry" <<'PY'
+    # Two hooks, installed and removed together as one unit, because they are
+    # one feature: Stop says a turn ended, SessionStart says which conversation
+    # the pane holds. Having only the first is what msesh shipped in v1.1.0;
+    # having only the second would record ids nothing ever reads.
+    "$py" - "$CLAUDE_SETTINGS" "$HOOKS_SUB" "$dry" \
+      "Stop=\"$NOTIFIER\" --turn-end" \
+      "SessionStart=\"$NOTIFIER\" --session-start" <<'PY'
 import json, os, shutil, sys
 
-path, action, hook_cmd, dry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == '1'
-EVENT = 'Stop'
+path, action, dry = sys.argv[1], sys.argv[2], sys.argv[3] == '1'
+WANT = []
+for spec in sys.argv[4:]:
+    ev, _, cmd = spec.partition('=')
+    WANT.append((ev, cmd))
 
 try:
     with open(path, encoding='utf-8') as fh:
@@ -1629,58 +1637,76 @@ except ValueError as e:
     sys.exit(1)
 
 hooks = cfg.setdefault('hooks', {}) if isinstance(cfg.get('hooks', {}), dict) else {}
-groups = hooks.get(EVENT, [])
 
 def mine(h):
     return isinstance(h, dict) and h.get('_msesh') == 1
 
-installed = [h for g in groups if isinstance(g, dict)
-               for h in g.get('hooks', []) if mine(h)]
-others = sum(1 for g in groups if isinstance(g, dict)
-               for h in g.get('hooks', []) if not mine(h))
+def scan(event):
+    groups = hooks.get(event, [])
+    installed = [h for g in groups if isinstance(g, dict)
+                   for h in g.get('hooks', []) if mine(h)]
+    others = sum(1 for g in groups if isinstance(g, dict)
+                   for h in g.get('hooks', []) if not mine(h))
+    return groups, installed, others
 
 if action in ('status', 'show'):
     print("settings:  %s" % path)
-    print("%s hooks:  %d total, %d msesh, %d yours"
-          % (EVENT, len(installed) + others, len(installed), others))
-    for h in installed:
-        print("  msesh -> %s" % h.get('command'))
-    if not installed:
-        print("  msesh is not installed — 'msesh hooks install' adds it")
-        print("  it would add: %s" % hook_cmd)
-    sys.exit(0 if installed else 1)
+    total_mine = 0
+    for event, hook_cmd in WANT:
+        groups, installed, others = scan(event)
+        total_mine += len(installed)
+        print("%s hooks:  %d total, %d msesh, %d yours"
+              % (event, len(installed) + others, len(installed), others))
+        for h in installed:
+            print("  msesh -> %s" % h.get('command'))
+        if not installed:
+            print("  msesh is not installed — 'msesh hooks install' adds it")
+            print("  it would add: %s" % hook_cmd)
+    sys.exit(0 if total_mine == len(WANT) else 1)
 
 if action in ('install', 'add'):
-    if any(h.get('command') == hook_cmd for h in installed):
-        print("msesh: turn-end hook already installed — nothing to do")
+    changed = False
+    for event, hook_cmd in WANT:
+        groups, installed, _ = scan(event)
+        if any(h.get('command') == hook_cmd for h in installed):
+            continue
+        # A stale msesh entry (an old path, a renamed prefix) is replaced rather
+        # than doubled: two of them would toast twice per turn.
+        for g in groups:
+            if isinstance(g, dict):
+                g['hooks'] = [h for h in g.get('hooks', []) if not mine(h)]
+        groups = [g for g in groups
+                  if not (isinstance(g, dict) and not g.get('hooks') and g.get('_msesh') == 1)]
+        groups.append({'_msesh': 1,
+                       'hooks': [{'type': 'command', 'command': hook_cmd, '_msesh': 1}]})
+        hooks[event] = groups
+        changed = True
+    if not changed:
+        print("msesh: hooks already installed — nothing to do")
         sys.exit(0)
-    # A stale msesh entry (an old path, a renamed prefix) is replaced rather
-    # than doubled: two of them would toast twice per turn.
-    for g in groups:
-        if isinstance(g, dict):
-            g['hooks'] = [h for h in g.get('hooks', []) if not mine(h)]
-    groups = [g for g in groups
-              if not (isinstance(g, dict) and not g.get('hooks') and g.get('_msesh') == 1)]
-    groups.append({'_msesh': 1,
-                   'hooks': [{'type': 'command', 'command': hook_cmd, '_msesh': 1}]})
-    hooks[EVENT] = groups
     cfg['hooks'] = hooks
     verb = 'would add'
 elif action in ('remove', 'uninstall', 'rm'):
-    if not installed:
+    changed = False
+    for event, _cmd in WANT:
+        groups, installed, _ = scan(event)
+        if not installed:
+            continue
+        for g in groups:
+            if isinstance(g, dict):
+                g['hooks'] = [h for h in g.get('hooks', []) if not mine(h)]
+        # Drop only the empty groups msesh itself created. An empty group
+        # belonging to someone else is theirs to keep.
+        groups = [g for g in groups
+                  if not (isinstance(g, dict) and g.get('_msesh') == 1 and not g.get('hooks'))]
+        if groups:
+            hooks[event] = groups
+        else:
+            hooks.pop(event, None)
+        changed = True
+    if not changed:
         print("msesh: no msesh hook in %s — nothing to remove" % path)
         sys.exit(0)
-    for g in groups:
-        if isinstance(g, dict):
-            g['hooks'] = [h for h in g.get('hooks', []) if not mine(h)]
-    # Drop only the empty groups msesh itself created. An empty group belonging
-    # to someone else is theirs to keep.
-    groups = [g for g in groups
-              if not (isinstance(g, dict) and g.get('_msesh') == 1 and not g.get('hooks'))]
-    if groups:
-        hooks[EVENT] = groups
-    else:
-        hooks.pop(EVENT, None)
     cfg['hooks'] = hooks
     verb = 'would remove'
 else:
@@ -1689,7 +1715,7 @@ else:
     sys.exit(1)
 
 if dry:
-    print("msesh: %s the turn-end hook in %s" % (verb, path))
+    print("msesh: %s the turn-end and session-start hooks in %s" % (verb, path))
     print("--- settings.json would become ---")
     print(json.dumps(cfg, indent=2))
     sys.exit(0)
@@ -1698,7 +1724,11 @@ if os.path.exists(path):
     shutil.copy2(path, path + '.msesh-backup')
 tmp = path + '.msesh.tmp'
 os.makedirs(os.path.dirname(path), exist_ok=True)
-with open(tmp, 'w', encoding='utf-8') as fh:
+# newline='' — without it python's text mode rewrites every \n as \r\n on
+# Windows, so adding one hook silently changed every line in the user's
+# settings.json and the documented "install then remove leaves it as it was"
+# was false on the platform msesh is most used on.
+with open(tmp, 'w', encoding='utf-8', newline='') as fh:
     json.dump(cfg, fh, indent=2)
     fh.write('\n')
 # Read it back before it replaces anything: a file this one cannot parse is a
@@ -1707,7 +1737,7 @@ with open(tmp, encoding='utf-8') as fh:
     json.load(fh)
 os.replace(tmp, path)
 print("msesh: %s %s in %s" % (verb.replace('would ', ''),
-                              'the turn-end hook', path))
+                              'the turn-end and session-start hooks', path))
 if os.path.exists(path + '.msesh-backup'):
     print("msesh: previous settings kept at %s.msesh-backup" % path)
 PY

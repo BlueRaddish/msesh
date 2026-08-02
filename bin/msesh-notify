@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
 # msesh-notify — desktop toast for msesh sessions.
 #
-# Three modes:
+# Four modes:
 #   msesh-notify --turn-end       a specific pane has finished its turn; the
 #                                 agent itself says so, via a Stop hook
+#   msesh-notify --session-start  record which conversation is in this pane,
+#                                 from a SessionStart hook's stdin
 #   msesh-notify                  scan tmux for msesh windows that have gone
 #                                 quiet or rung the bell, and toast those
 #   msesh-notify "Title" "Body"   pop a toast right now
+#
+# The first two are both called by Claude Code, from its own hooks, which is
+# why they live together here rather than in msesh: this file has no re-exec
+# and no argument parsing to go wrong, and it is already the program the
+# user's settings.json points at.
 #
 # --turn-end is the good signal and the scan is the fallback. An agent that
 # tells you it has finished is exact and immediate; silence is a guess that is
@@ -37,6 +44,60 @@ TMUX_BIN=$(plat_tmux)
 # desktop notifier at all. Backgrounded because some notifiers block for the
 # lifetime of the notification and nothing here is worth waiting on.
 toast() { plat_notify "$1" "${2:-}" & }
+
+# --- session-start mode --------------------------------------------------------
+# Claude Code hands a SessionStart hook a JSON object on stdin carrying the
+# conversation's session_id, its cwd, and the path to its transcript. Recording
+# which pane that conversation is in is the whole basis of 'restore --resume':
+# without it a restored pane is a fresh agent with no memory of the work.
+#
+# Read with sed rather than a JSON parser on purpose. This runs on every session
+# start, in the agent's own process tree, on machines that may have no python at
+# all — and the two fields wanted are a UUID and a path, written by a program,
+# never by hand. 'msesh hooks' still uses python, because editing someone's
+# settings.json is a different risk from reading one generated line.
+#
+# The id survives --resume unchanged (verified), so a recorded id stays valid
+# for the life of the conversation; the pane id does not, which is why this is
+# an upsert keyed by pane rather than an append.
+if [ "${1:-}" = "--session-start" ]; then
+  pane=${TMUX_PANE:-}
+  payload=$(cat 2>/dev/null)
+  [ -n "$pane" ] || exit 0                     # not in tmux; nothing to key on
+
+  sid=$(printf '%s' "$payload" |
+        sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  [ -n "$sid" ] || exit 0
+
+  cwd=$(printf '%s' "$payload" |
+        sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  transcript=$(printf '%s' "$payload" |
+        sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+
+  state=${MSESH_STATE:-$(plat_config_home)/sessions}
+  mkdir -p "$state" 2>/dev/null || exit 0
+  map=$state/agents.map
+
+  # Rewrite through a temp file: two panes can start at the same moment, and a
+  # half-written map is worse than a missing one.
+  tmp=$map.$$
+  {
+    printf '# msesh agents.map — pane, conversation id, cwd, transcript\n'
+    printf '# written by a SessionStart hook; read by "restore --resume"\n'
+    if [ -r "$map" ]; then
+      while IFS= read -r line || [ -n "$line" ]; do
+        case $line in
+          '#'*|'') continue ;;
+          "$pane	"*) continue ;;                 # this pane, superseded below
+          *) printf '%s\n' "$line" ;;
+        esac
+      done < "$map"
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$pane" "$sid" "$cwd" "$transcript"
+  } > "$tmp" 2>/dev/null && mv "$tmp" "$map" 2>/dev/null
+  rm -f "$tmp" 2>/dev/null
+  exit 0
+fi
 
 # --- turn-end mode ------------------------------------------------------------
 # Called from the agent's own Stop hook, inside the pane that finished. Every
