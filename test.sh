@@ -4,7 +4,11 @@
 # Covers the parts that are pure logic — spec resolution, effort assignment
 # against the agent table, layout resolution, the preset file rewrite and the
 # manifest round-trip. All of it goes through `--dry-run`, so no tmux session
-# is ever built and the whole run takes a second.
+# is ever built.
+#
+# Every check is one msesh invocation, so the runtime is process startup and
+# nothing else: a couple of seconds on Linux and macOS, around four minutes on
+# Windows under MSYS2, where spawning is expensive. It is not hung.
 #
 # What is deliberately not here: anything about what tmux actually draws. Pane
 # borders and the status bar cannot be read with capture-pane — see

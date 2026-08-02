@@ -307,7 +307,9 @@ Both ask `msesh complete-names KIND`, which prints one name per line and nothing
 
 ## Tests
 
-`./test.sh` — 92 checks over spec resolution, effort against the agent table, layout resolution, the preset file rewrite, the manifest round-trip, the portability invariants, and whether the help still describes the tool. Everything goes through `--dry-run`, so no tmux session is built and the run takes about a second. `-v` lists each check.
+`./test.sh` — 152 checks over spec resolution, effort against the agent table, layout resolution, the preset file rewrite, the manifest round-trip, the portability invariants, and whether the help still describes the tool. Everything goes through `--dry-run`, so no tmux session is ever built. `-v` lists each check.
+
+The run is dominated by process startup, so it is quick on Linux and macOS and slow where spawning is expensive — on Windows under MSYS2, expect around four minutes rather than the couple of seconds it takes elsewhere.
 
 CI runs the same suite on Linux, macOS and MSYS2 on every push — the macOS job deliberately uses `/bin/bash`, which is bash 3.2, because that is the bash a Mac user actually has.
 
