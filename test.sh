@@ -293,6 +293,44 @@ for v in build rebuild add attach restore kill forget list status send doctor \
   check "the front page lists '$v'" "  $v" -- help
 done
 
+# --- help conformance ----------------------------------------------------------
+# The Help Screen Protocol's lint rules. Help rots silently and review does not
+# catch it — this file exists because it drifted twice in one day.
+echo "help conformance"
+
+for t in "" specs options preset layout agents hooks files env; do
+  out=$("$MSESH" help $t 2>/dev/null)
+  label=${t:-main}
+
+  wide=$(printf '%s
+' "$out" | awk 'length($0) > 95 { print NR": "length($0) }')
+  [ -z "$wide" ] && port_ok "L1 '$label' fits 95 columns"                  || port_fail "L1 '$label' fits 95 columns" "$wide"
+
+  # L14: tab width is unpredictable across terminals and breaks alignment.
+  case $out in
+    *"$(printf '	')"*) port_fail "L14 '$label' has no tabs" "found a tab" ;;
+    *) port_ok "L14 '$label' has no tabs" ;;
+  esac
+
+  # L9: escape codes must never survive a pipe.
+  case $out in
+    *$'['*) port_fail "L9 '$label' has no escape codes" "found ESC[" ;;
+    *) port_ok "L9 '$label' has no escape codes" ;;
+  esac
+done
+
+# L4: asking for help is not an error, so nothing goes to stderr.
+err=$("$MSESH" help 2>&1 >/dev/null)
+[ -z "$err" ] && port_ok "L4 help writes nothing to stderr"               || port_fail "L4 help writes nothing to stderr" "$err"
+
+# L3: and it succeeds.
+"$MSESH" help >/dev/null 2>&1 && port_ok "L3 help exits 0"                               || port_fail "L3 help exits 0" "non-zero exit"
+
+# L11 and the required sections of the root screen.
+for want in NAME USAGE DESCRIPTION EXAMPLES COMMANDS OPTIONS "EXIT STATUS"             "SEE ALSO" "REPORT BUGS" "github.com"; do
+  check "root help has $want" "$want" -- help
+done
+
 echo "the version key is written"
 "$MSESH" layout make v 1 bash -d "$HOME" >/dev/null
 check "layouts carry a version"        "version=1"    -- layout show v

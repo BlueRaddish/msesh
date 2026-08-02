@@ -240,69 +240,102 @@ is_claude_cmd() { [ "$(agent_of_cmd "$1" || true)" = claude ]; }
 die() { echo "msesh: $*" >&2; exit 1; }
 
 usage_short() {
-  cat <<'EOF'
+  cat <<EOF
 usage: msesh <command> [options] [specs]
-       msesh build 4 claude          msesh list
-       msesh attach work             msesh preset list
-       msesh build quad              msesh layout list
-       msesh help                    msesh help specs
+
+  \$ msesh build 4              four shells in a new tab
+  \$ msesh build 4 claude       four claude panes instead
+
+Run 'msesh help' for all commands.
 EOF
 }
 
 help_main() {
   cat <<EOF
-msesh — a tmux session of N panes in a new terminal tab, each pane running a
-preset: an agent, a shell, or anything you name yourself. Runs on Linux, macOS,
-Windows and WSL.
+NAME
+  msesh $MSESH_VERSION — a tmux session of N panes, each running an agent, a
+  shell, or any command you name
 
-usage: msesh <command> [options] [specs]
+USAGE
+  msesh <command> [options] [specs]
+  msesh build [options] [SPECS...]
+  msesh help [TOPIC]
 
-COMMANDS
-  build [SPECS]     build a session, or attach to it if it is already up
-  rebuild [SPECS]   kill this session and build it again from scratch
-  add [SPECS]       add panes to a session that is already up
-  attach [NAME]     attach to a session, restoring it first if it is down
-  restore [NAME]    rebuild a session as it was          (--all for every one)
-  kill [NAME]       kill a session and everything in it  (--all for every one)
-  forget NAME       drop a recorded session so it stops being restored
-  list              live sessions, layouts and recorded sessions
-  status [NAME]     what each pane is doing, and which window is waiting
-  send NAME TEXT    type TEXT into every agent pane of NAME  (--all: every pane)
-  doctor            check this machine: tmux, terminal, notifier, PATH
-  hooks [SUB]       status | install | remove the turn-end signal
-  preset ...        name a command one pane runs — 'msesh help preset'
-  layout ...        name a whole session — 'msesh help layout'
-  help [TOPIC]      this page, or a topic below
-  version           print the version
-
-OPTIONS you will actually type
-  -s, --session NAME   name the session (default: $SESSION)
-  -d, --dir DIR        working directory for every pane (default: \$PWD)
-  -e, --effort LIST    effort for agent panes: 'ladder', or l,m,h,x in order
-  -w, --width N        max panes per window before spilling (default: 4)
-
-  The rest — --lazy, --notify, --windows, --dry-run, --no-tab, --ephemeral,
-  --no-trust — are in 'msesh help options'.
+DESCRIPTION
+  Builds a tmux session of N panes in a new terminal tab and keeps track of it.
+  Sessions outlive the tab, survive a reboot, and say when a pane is waiting on
+  you. Runs on Linux, macOS, Windows and WSL.
 
 EXAMPLES
-  msesh build 4                     four plain shells here
-  msesh build 3 claude +pwsh -s work  three claude panes and a shell, 'work'
-  msesh build 3 claude -e ladder    panes at low, medium and high effort
-  msesh layout make quad 4 claude -e ladder    save that as 'quad'
-  msesh build quad                  ...and build it, whenever
-  msesh attach work                 back to 'work', restoring it if it died
-  msesh restore --all               bring every known session back
-  msesh kill --all                  stop every msesh session
+  Four shells, tiled, in a new tab:
+    \$ msesh build 4
 
-HELP TOPICS
+  Three claude panes and a shell, named 'work':
+    \$ msesh build 3 claude +shell -s work
+
+  Panes at low, medium and high effort:
+    \$ msesh build 3 claude -e ladder
+
+  Name that whole session, then build it whenever:
+    \$ msesh layout make quad 4 claude -e l,m,h,x
+    \$ msesh build quad
+
+  See what a command would build, without building it:
+    \$ msesh build quad --dry-run
+
+COMMANDS
+  Building
+    build [SPECS]     build a session, or attach if it is already up
+    rebuild [SPECS]   kill this session and build it again
+    add [SPECS]       add panes to a session already up
+    attach [NAME]     attach, restoring the session first if it is down
+
+  Keeping
+    restore [NAME]    rebuild a session as it was       (--all for every one)
+    kill [NAME]       kill a session and its panes      (--all for every one)
+    forget NAME       drop a recorded session
+    list              live sessions, layouts, recorded sessions
+
+  Naming
+    preset ...        name a command one pane runs
+    layout ...        name a whole session
+
+  Checking
+    status [NAME]     what each pane is doing, and which is waiting
+    doctor            check this machine
+    send NAME TEXT    type TEXT into every agent pane
+    hooks [SUB]       the turn-end signal from an agent
+
+  Run 'msesh help <topic>' for detail on any of these.
+
+OPTIONS
+  The four you will type most; 'msesh help options' has the rest.
+
+  -s, --session NAME    name the session (default: msesh)
+  -d, --dir DIR         working directory for every pane (default: \$PWD)
+  -e, --effort LIST     effort for agent panes: 'ladder', or l,m,h,x in order
+  -w, --width N         max panes per window before spilling (default: 4)
+  -n, --dry-run         print what would be built, build nothing
+  -h, --help            show this help
+      --version         show the version
+
+EXIT STATUS
+  0   success
+  1   the command failed
+  2   usage error
+
+SEE ALSO
   msesh help specs      how the pane arguments are read
   msesh help options    every option, grouped
-  msesh help preset     the preset commands and the presets file
-  msesh help layout     naming a whole session and building it back
-  msesh help agents     which commands count as an agent, and their effort
+  msesh help preset     naming one pane
+  msesh help layout     naming a whole session
+  msesh help agents     which commands count as an agent
   msesh help hooks      how a pane reports that its turn ended
-  msesh help files      where presets, layouts and manifests live
+  msesh help files      where msesh keeps things
   msesh help env        environment variables msesh honours
+
+REPORT BUGS
+  https://github.com/BlueRaddish/msesh/issues
 EOF
 }
 
@@ -506,11 +539,11 @@ Being one changes two things:
              for four panes. --eager starts them anyway.
 
 EOF
-  printf '  +------------+----------------------+------------------------------+------------------------------+
+  printf '  +------------+--------------------+----------------------------+--------------------------+
 '
-  printf '  | %-10s | %-20s | %-28s | %-28s |
+  printf '  | %-10s | %-18s | %-26s | %-24s |
 ' AGENT COMMAND 'EFFORT FLAG' LEVELS
-  printf '  +------------+----------------------+------------------------------+------------------------------+
+  printf '  +------------+--------------------+----------------------------+--------------------------+
 '
   for i in "${!AGENT_NAMES[@]}"; do
     flag=${AGENT_EFFORT[$i]}; levels=${AGENT_LEVELS[$i]}
@@ -524,10 +557,10 @@ EOF
     [ -n "$cmd" ] || cmd='(not installed)'
     [ -n "$flag" ]   || flag='(none)'
     [ -n "$levels" ] || levels='-'
-    printf '  | %-10s | %-20.20s | %-28.28s | %-28.28s |
+    printf '  | %-10s | %-18.18s | %-26.26s | %-24.24s |
 '       "${AGENT_NAMES[$i]}" "$cmd" "$flag" "${levels//,/, }"
   done
-  printf '  +------------+----------------------+------------------------------+------------------------------+
+  printf '  +------------+--------------------+----------------------------+--------------------------+
 '
   cat <<EOF
 
