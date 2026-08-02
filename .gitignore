@@ -2,3 +2,6 @@
 *.log
 .DS_Store
 Thumbs.db
+
+# the live-session register, local to this clone
+working.md
