@@ -369,12 +369,9 @@ OPTIONS — all of them. Only build, rebuild and add use the pane ones.
                          (default: 20, 0 = off)
         --no-notify      same as --notify 0
 
-    Silence is the fallback signal, not the good one. An agent that has told
-    msesh its turn ended is exact and immediate; silence is a guess, late by
-    the whole timeout and wrong in both directions. Run 'msesh hooks install'
-    once and agent panes report for themselves — see 'msesh help hooks'.
-    These options still govern everything that is not an agent: a build, a
-    test run, a REPL, none of which will ever call a hook.
+    Silence is the fallback. Run 'msesh hooks install' and agent panes report
+    the end of a turn themselves — 'msesh help hooks'. These options govern
+    everything that is not an agent.
 
     A toast is gone in seconds and does not say where to look, so the alert
     is also shown in three places that stay put until you deal with it:
@@ -564,38 +561,101 @@ EOF
 }
 
 help_files() {
-  local presets=${MSESH_PRESETS:-$(plat_config_home)/presets.conf}
-  local state=${MSESH_STATE:-$(plat_config_home)/sessions}
-  local layouts=${MSESH_LAYOUTS:-$(plat_config_home)/layouts}
-  local agents=${MSESH_AGENTS:-$(plat_config_home)/agents.conf}
+  # A path list, not an essay. What each of these is *for* is the business of
+  # its own topic; someone typing 'help files' wants to know where to look.
   cat <<EOF
 FILES
 
-  $presets
-      presets, as 'name = command' lines. See 'msesh help preset'.
+  presets    ${MSESH_PRESETS:-$(plat_config_home)/presets.conf}
+  agents     ${MSESH_AGENTS:-$(plat_config_home)/agents.conf}
+  layouts    ${MSESH_LAYOUTS:-$(plat_config_home)/layouts}/
+  sessions   ${MSESH_STATE:-$(plat_config_home)/sessions}/
+  settings   $CLAUDE_SETTINGS
 
-  $agents
-      agents you have taught msesh about. See 'msesh help agents'.
+'layouts' are sessions you described; 'sessions' are ones msesh recorded.
+'settings' is Claude Code's, and only 'msesh hooks' touches it.
 
-  $layouts/
-      one file per layout — a session you described and named. Yours, and
-      only ever written when you ask. See 'msesh help layout'.
-
-  $state/
-      one manifest per session msesh built, rewritten on every build. tmux
-      sessions survive a closed tab but not a reboot, so this is what 'msesh
-      restore' rebuilds from. Point a logon task at 'msesh restore --all
-      --no-tab' to bring your working set back with the machine.
-
-  The last two share a format and differ in who wrote them: a layout is a
-  definition, a manifest is a recording. Keeping them apart is what stops a
-  build from overwriting the layout it was built from.
-
-msesh runs on Linux, macOS, Windows and WSL, from any shell. On Windows,
-PowerShell and cmd reach it through msesh.cmd next to the script, and other
-bashes are handed over to MSYS2 — the only place tmux exists there.
+See 'msesh help preset', 'agents', 'layout', 'hooks'.
 EOF
 }
+
+# Printed from the table itself rather than written out, so a registration
+# added in agents.conf shows up here without anyone remembering to say so.
+help_agents() {
+  local file=${MSESH_AGENTS:-$(plat_config_home)/agents.conf} i flag levels
+  cat <<EOF
+AGENTS — the pane commands msesh treats as an interactive assistant rather
+than a shell. Two things follow from being one:
+
+  -e       injects that agent's effort flag, spelled its way
+  --lazy   pre-types the pane instead of running it, since these are the
+           commands that are slow and expensive to start
+
+A pane is matched on the command it runs, so 'review = claude ... /code-review'
+and 'yolo = codex --full-auto' are recognised without being listed.
+
+EOF
+  printf '  %-10s %-28s %s\n' AGENT 'EFFORT FLAG' 'LEVELS'
+  for i in "${!AGENT_NAMES[@]}"; do
+    flag=${AGENT_EFFORT[$i]}; levels=${AGENT_LEVELS[$i]}
+    [ -n "$flag" ]   || flag='(none)'
+    [ -n "$levels" ] || levels='—'
+    printf '  %-10s %-28s %s\n' "${AGENT_NAMES[$i]}" "$flag" "${levels//,/, }"
+  done
+  cat <<EOF
+
+An agent with no effort flag is left out of -e rather than made an error, so a
+session mixing one with claude still takes a single -e. Asking for a level an
+agent does not have is an error naming both, because running at some other
+effort than the one you asked for is worse than not starting.
+
+Add your own in
+  $file
+as 'name = flag | levels', where the flag carries its own separator:
+
+  myagent    = --reasoning | quick,deep
+  otheragent =                              (no effort setting)
+
+Only these two facts are per-agent. Everything else msesh does — panes,
+windows, alerts, layouts — is the same whatever is running in the pane.
+EOF
+}
+
+help_hooks() {
+  cat <<EOF
+HOOKS — how a pane tells msesh its turn has ended.
+
+  msesh hooks status     is it installed, and what else is in that file
+  msesh hooks install    add it
+  msesh hooks remove     take it out again
+  msesh hooks --dry-run  with install or remove: print, write nothing
+
+By default msesh infers "waiting on you" from silence: a pane that has printed
+nothing for --notify seconds has, in practice, finished. That is a guess. It is
+late by the length of the timeout, and wrong in both directions — an agent
+thinking quietly looks finished, and one printing steadily never alerts.
+
+Claude Code will just tell you. 'hooks install' adds a Stop hook to
+  $CLAUDE_SETTINGS
+which runs msesh-notify the moment a turn ends. The pane is marked, its window
+lights up, and 'msesh status' shows it as WAITING. Silence monitoring stays on
+for panes that are not agents, where it was always the right signal.
+
+That file belongs to Claude Code, not to msesh, and usually holds hooks you
+wrote yourself. So this command:
+
+  * only ever appends — it does not rewrite, reorder or drop an entry it did
+    not create
+  * tags everything it writes with "_msesh", so remove takes exactly its own
+  * copies the file to settings.json.msesh-backup before writing
+  * parses what it wrote before letting it replace anything
+  * changes nothing on a second install
+
+An install followed by a remove leaves the file byte-identical. 'hooks status'
+never writes at all.
+EOF
+}
+
 
 help_env() {
   cat <<'EOF'
