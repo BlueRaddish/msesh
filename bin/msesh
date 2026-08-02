@@ -121,7 +121,7 @@ SESSION_SET=0
 # MSESH_DEFAULT_PRESET=claude restores the old behaviour for anyone who wants it.
 DEFAULT_PRESET=${MSESH_DEFAULT_PRESET:-shell}
 
-MSESH_VERSION=1.4.0
+MSESH_VERSION=1.4.1
 
 # The manifest and layout file format, which moves independently of the tool's
 # own version and only when the meaning of a key changes. Written into every
@@ -759,14 +759,15 @@ FILES
   agents     ${MSESH_AGENTS:-$(plat_config_home)/agents.conf}
   layouts    ${MSESH_LAYOUTS:-$(plat_config_home)/layouts}/
   sessions   ${MSESH_STATE:-$(plat_config_home)/sessions}/
-  snapshots  ${MSESH_STATE:-$(plat_config_home)/sessions}/snapshots/HOST/
-  map        ${MSESH_STATE:-$(plat_config_home)/sessions}/agents.map
   settings   $CLAUDE_SETTINGS
 
-  'layouts' are sessions you described, 'sessions' ones msesh recorded, and
-  'snapshots' the history of those recordings. 'map' is which conversation is
-  in which pane, written by a hook. 'settings' is Claude Code's, and only
-  'msesh hooks' touches it.
+  'layouts' are sessions you described, 'sessions' ones msesh recorded.
+  'settings' is Claude Code's, and only 'msesh hooks' touches it.
+
+  Two more live inside 'sessions': 'snapshots/HOST/', the history of those
+  recordings, and 'agents.map', which conversation is in which pane. Named
+  relative to it rather than spelled out again, because a deep state
+  directory would push the line past the width this page has to fit in.
 
 SEE ALSO
   msesh help preset     the presets file

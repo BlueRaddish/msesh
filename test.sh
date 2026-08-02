@@ -391,19 +391,29 @@ for t in "" specs options preset layout agents hooks resume files env; do
   # 28 characters, then a gutter of two or more spaces, then the description.
   # Prose paragraphs are single-spaced and never match; the agents table is
   # skipped by its border characters.
+  # [$] rather than \$: macOS ships the one-true-awk, which rejects \$ in a
+  # regex as an unknown escape. It did so silently — awk bailed out, printed
+  # nothing, and an empty result reads exactly like "no violations", so this
+  # rule passed on macOS for a whole release without ever running. Hence the
+  # exit status is now checked too: a lint that cannot fail is not a lint.
   bad=$(printf '%s\n' "$out" | awk '
     /^[ ]*[|+]/ { next }                      # the agents table, not a row
-    /^[ ]*\$ / { next }                       # an example, not a row
+    /^[ ]*[$] / { next }                      # an example, not a row
     {
       n = split($0, f, /[ ][ ]+/)
       if (n < 3 || f[1] != "") next           # needs indent, token, description
       if (length(f[2]) > 28) next             # a long left side is prose
       d = f[3]
       # A capitalised word is a sentence opener. A placeholder (N, PRESET) and
-      # a path (C:/…) are neither, so the test is for capital-then-lowercase.
-      if (d ~ /^[A-Z][a-z]/ || d ~ /\.$/) print NR": "d
+      # a path (C:/...) are neither, so the test is capital-then-lowercase.
+      if (d ~ /^[A-Z][a-z]/ || d ~ /[.]$/) print NR": "d
     }')
-  [ -z "$bad" ] && port_ok "L6 '$label' descriptions are labels"           || port_fail "L6 '$label' descriptions are labels" "$bad"
+  awkrc=$?
+  if [ "$awkrc" != 0 ]; then
+    port_fail "L6 '$label' descriptions are labels" "awk failed (rc=$awkrc) — the rule did not run"
+  else
+    [ -z "$bad" ] && port_ok "L6 '$label' descriptions are labels"         || port_fail "L6 '$label' descriptions are labels" "$bad"
+  fi
 
   # L8: one placeholder style — UPPER, with POSIX brackets for what is
   # optional. An angled placeholder is a second style, which is the mix the
@@ -446,6 +456,17 @@ invented=$(comm -13 <(printf '%s\n' "$parser_flags") <(printf '%s\n' "$doc_flags
 # Each is run against the scratch config with --dry-run forced, which exercises
 # the whole argument path without building anything. Examples that are not
 # msesh commands, or that would write outside the sandbox, are skipped by name.
+#
+# Collected into a variable first, deliberately. This pipeline used to live in
+# the heredoc feeding the loop, and a backslash inside a command substitution
+# inside an unquoted heredoc survives — awk was handed a literal `\$0`, bailed
+# out, and fed the loop nothing. The rule then reported that all *zero* examples
+# parsed, and passed on every platform for a whole release. Hence the count is
+# now asserted below: a rule with nothing to check is a failure, not a pass.
+ex_list=$(for t in "" specs options preset layout agents hooks resume files env; do
+            "$MSESH" help $t 2>/dev/null
+          done | sed -n 's/^[[:space:]]*\$ \(msesh .*\)$/\1/p' | awk '!seen[$0]++')
+
 ex_run=0 ex_bad=
 while IFS= read -r ex; do
   case $ex in
@@ -471,12 +492,15 @@ while IFS= read -r ex; do
   \$ $ex -> rc=$rc" ;;
   esac
 done <<EOF
-$(for t in "" specs options preset layout agents hooks resume files env; do
-    "$MSESH" help $t 2>/dev/null
-  done | sed -n 's/^[[:space:]]*\$ \(msesh .*\)$/\1/p' | awk '!seen[\$0]++')
+$ex_list
 EOF
-[ -z "$ex_bad" ] && port_ok "L13 all $ex_run help examples still parse" \
-  || port_fail "L13 all $ex_run help examples still parse" "$ex_bad"
+if [ "$ex_run" -lt 10 ]; then
+  port_fail "L13 all $ex_run help examples still parse" \
+    "only $ex_run examples were collected — the extraction is broken, not the help"
+else
+  [ -z "$ex_bad" ] && port_ok "L13 all $ex_run help examples still parse" \
+    || port_fail "L13 all $ex_run help examples still parse" "$ex_bad"
+fi
 
 # L11 and the required sections of the root screen.
 for want in NAME USAGE DESCRIPTION EXAMPLES COMMANDS OPTIONS "EXIT STATUS"             "SEE ALSO" "REPORT BUGS" "github.com"; do
