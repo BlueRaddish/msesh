@@ -8,8 +8,8 @@
 #
 # What is deliberately not here: anything about what tmux actually draws. Pane
 # borders and the status bar cannot be read with capture-pane — see
-# SUGGESTIONS.md §6.3 for the outer-tmux trick that can, which is worth adding
-# here once the alert path stops changing.
+# the WORKFLOW.md in this project's PARA folder for the outer-tmux trick that
+# can, which is worth adding here once the alert path stops changing.
 #
 # Run it from anywhere:  ./test.sh  [-v]
 #
@@ -289,9 +289,10 @@ done
 check "an unknown topic lists the real ones" "topics: specs" -- help nope
 
 for v in build rebuild add attach restore kill forget list status send doctor \
-         hooks preset layout version; do
+         hooks preset layout; do
   check "the front page lists '$v'" "  $v" -- help
 done
+check "the front page shows --version" "--version" -- help
 
 # --- help conformance ----------------------------------------------------------
 # The Help Screen Protocol's lint rules. Help rots silently and review does not
