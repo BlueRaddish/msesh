@@ -37,6 +37,12 @@ export MSESH_AGENTS=$ROOT/agents.conf
 # and a second hop would lose the environment above.
 export MSESH_REEXEC=1
 export CLAUDE_BIN=claude CLAUDE_FLAGS=--remote-control
+# Pointed at the scratch tree before a single check runs, so that no bug in
+# 'msesh hooks' — and no test added later in a hurry — can reach the real
+# ~/.claude/settings.json. That file belongs to Claude Code and commonly holds
+# hooks the user wrote; damaging it would not break msesh, it would silently
+# stop their work running.
+export CLAUDE_SETTINGS=$ROOT/settings.json
 
 mkdir -p "$MSESH_STATE" "$MSESH_LAYOUTS"
 trap 'rm -rf "$ROOT"' EXIT
@@ -523,6 +529,122 @@ fi
 for want in NAME USAGE DESCRIPTION EXAMPLES COMMANDS OPTIONS "EXIT STATUS"             "SEE ALSO" "REPORT BUGS" "github.com"; do
   check "root help has $want" "$want" -- help
 done
+
+echo "hooks"
+# The most invasive thing msesh does, and until now the least tested: it edits
+# a file that is not its own. Everything here runs against the scratch
+# CLAUDE_SETTINGS exported at the top.
+#
+# --dry-run is the case that earns this whole section. It was broken for the
+# entire life of the feature: the subcommand re-scanned ARGS for the flag, but
+# the global option parser had already consumed it into DRY_RUN and did not put
+# it back, so the scan matched nothing, 'dry' was always 0, and
+# 'hooks install --dry-run' performed a real install of the one thing whose
+# whole design is about not surprising you.
+hooks_py=$(command -v python3 || command -v python || true)
+if [ -z "$hooks_py" ]; then
+  SKIP=$((SKIP + 1))
+  echo "  SKIP hooks (no python on this machine)"
+else
+  seed_settings() {
+    cat > "$CLAUDE_SETTINGS" <<'JSON'
+{
+  "model": "opus",
+  "hooks": {
+    "Stop": [
+      {"hooks": [{"type": "command", "command": "echo yours"}]}
+    ]
+  }
+}
+JSON
+  }
+
+  untouched() {                         # untouched NAME -- ARGS...
+    local name=$1; shift 2
+    local before after
+    before=$(cksum < "$CLAUDE_SETTINGS")
+    "$MSESH" "$@" >/dev/null 2>&1
+    after=$(cksum < "$CLAUDE_SETTINGS")
+    if [ "$before" = "$after" ]; then
+      PASS=$((PASS + 1)); [ "$VERBOSE" = 1 ] && printf '  ok   %s\n' "$name"
+    else
+      FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$name"
+      printf '       "msesh %s" rewrote the settings file\n' "$*"
+    fi
+    return 0
+  }
+
+  in_file() {                           # in_file NAME EXPECT
+    if grep -qF -- "$2" "$CLAUDE_SETTINGS" 2>/dev/null; then
+      PASS=$((PASS + 1)); [ "$VERBOSE" = 1 ] && printf '  ok   %s\n' "$1"
+    else
+      FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"
+      printf '       settings file has no: %s\n' "$2"
+    fi
+    return 0
+  }
+
+  seed_settings
+  check "dry-run install is hypothetical" "would add"  -- hooks install --dry-run
+  check "dry-run install shows the result" '"_msesh"'  -- hooks install --dry-run
+  untouched "dry-run install writes nothing"           -- hooks install --dry-run
+  if [ -e "$CLAUDE_SETTINGS.msesh-backup" ]; then
+    FAIL=$((FAIL + 1)); echo "  FAIL dry-run install left a backup behind"
+  else
+    PASS=$((PASS + 1)); [ "$VERBOSE" = 1 ] && echo "  ok   dry-run install leaves no backup"
+  fi
+  check "status is quiet before installing" "0 msesh" -- hooks status
+  untouched "status never writes"                     -- hooks status
+
+  check "install adds both hooks" "the turn-end and session-start hooks" -- hooks install
+  check "status counts the Stop hook"      "Stop hooks:"        -- hooks status
+  check "status counts the SessionStart"   "SessionStart hooks:" -- hooks status
+  check "status keeps yours apart from ours" "1 yours"          -- hooks status
+  in_file "your own hook survives install"  "echo yours"
+  in_file "what msesh writes is tagged"     '"_msesh"'
+  check "a second install is a no-op" "already installed" -- hooks install
+  untouched "a second install changes nothing"        -- hooks install
+
+  # The v1.4.0 defect, which was invisible for two releases: python's text mode
+  # rewrites every \n as \r\n on Windows, so adding one hook silently changed
+  # every line of the user's file. Asserted on every platform because the bug
+  # is only reachable on one, and that is the one nobody runs the suite on.
+  if [ "$(tr -cd '\r' < "$CLAUDE_SETTINGS" | wc -c)" -eq 0 ]; then
+    PASS=$((PASS + 1)); [ "$VERBOSE" = 1 ] && echo "  ok   install leaves line endings alone"
+  else
+    FAIL=$((FAIL + 1)); echo "  FAIL install rewrote the file to CRLF"
+  fi
+
+  check "dry-run remove is hypothetical" "would remove" -- hooks remove --dry-run
+  untouched "dry-run remove writes nothing"             -- hooks remove --dry-run
+
+  # Byte-identical round trip, measured from a file already in the canonical
+  # shape. The first install/remove pair normalises the formatting; every pair
+  # after it must change nothing at all. Measuring from the hand-written seed
+  # instead would conflate "msesh damaged the file" with "json.dump reindented
+  # it", and only one of those is a bug.
+  seed_settings
+  "$MSESH" hooks install >/dev/null 2>&1
+  "$MSESH" hooks remove  >/dev/null 2>&1
+  canon=$(cksum < "$CLAUDE_SETTINGS")
+  "$MSESH" hooks install >/dev/null 2>&1
+  "$MSESH" hooks remove  >/dev/null 2>&1
+  if [ "$canon" = "$(cksum < "$CLAUDE_SETTINGS")" ]; then
+    PASS=$((PASS + 1)); [ "$VERBOSE" = 1 ] && echo "  ok   install then remove is a round trip"
+  else
+    FAIL=$((FAIL + 1)); echo "  FAIL install then remove did not restore the file"
+  fi
+  in_file "remove leaves your own hook"  "echo yours"
+  # Asked as a yes/no, not as a count. 'grep -c' prints 0 *and* exits 1 when it
+  # matches nothing, so the obvious 'grep -c ... || echo 0' yields the string
+  # "0\n0" and compares unequal to 0 — the check then fails on the one outcome
+  # it exists to call a pass.
+  if grep -qF -- '"_msesh"' "$CLAUDE_SETTINGS" 2>/dev/null; then
+    FAIL=$((FAIL + 1)); echo "  FAIL remove left tagged entries behind"
+  else
+    PASS=$((PASS + 1)); [ "$VERBOSE" = 1 ] && echo "  ok   remove takes all of its own"
+  fi
+fi
 
 echo "the version key is written"
 # Read off the script rather than written out here: this test existed to prove

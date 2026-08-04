@@ -1814,8 +1814,13 @@ case $ACTION in
     NOTIFIER=${MSESH_NOTIFIER:-$SELF_DIR/msesh-notify}
     # An absolute path, resolved now: the hook runs in the agent's environment,
     # which may not have this directory on PATH at all.
-    dry=0
-    case " ${ARGS[*]} " in *" --dry-run "*) dry=1 ;; esac
+    # Read the flag the parser already set, never re-scan ARGS for it: the
+    # global option loop consumes --dry-run/-n into DRY_RUN and does not put it
+    # back, so a second scan here matches nothing and silently means "not a dry
+    # run" — which turned 'hooks install --dry-run' into a real install of the
+    # most invasive thing msesh does. Any subcommand wanting a global flag must
+    # read its variable.
+    dry=$DRY_RUN
     # Two hooks, installed and removed together as one unit, because they are
     # one feature: Stop says a turn ended, SessionStart says which conversation
     # the pane holds. Having only the first is what msesh shipped in v1.1.0;
