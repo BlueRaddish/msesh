@@ -755,14 +755,19 @@ NAME
   msesh files — where msesh keeps things
 
 FILES
-  presets    ${MSESH_PRESETS:-$(plat_config_home)/presets.conf}
-  agents     ${MSESH_AGENTS:-$(plat_config_home)/agents.conf}
-  layouts    ${MSESH_LAYOUTS:-$(plat_config_home)/layouts}/
-  sessions   ${MSESH_STATE:-$(plat_config_home)/sessions}/
-  settings   $CLAUDE_SETTINGS
+  msesh's own:
+    presets    ${MSESH_PRESETS:-$(plat_config_home)/presets.conf}
+    agents     ${MSESH_AGENTS:-$(plat_config_home)/agents.conf}
+    layouts    ${MSESH_LAYOUTS:-$(plat_config_home)/layouts}/
+    sessions   ${MSESH_STATE:-$(plat_config_home)/sessions}/
 
-  'layouts' are sessions you described, 'sessions' ones msesh recorded.
-  'settings' is Claude Code's, and only 'msesh hooks' touches it.
+  An agent's own, listed per agent because each keeps hooks somewhere
+  different, and 'msesh hooks' is the only thing that touches them:
+    claude     $CLAUDE_SETTINGS
+
+  'layouts' holds sessions you defined yourself; 'sessions' holds ones msesh
+  saved as you built and killed them. 'build NAME' reads a layout,
+  'restore NAME' prefers a recording.
 
   Two more live inside 'sessions': 'snapshots/HOST/', the history of those
   recordings, and 'agents.map', which conversation is in which pane. Named
@@ -773,7 +778,7 @@ SEE ALSO
   msesh help preset     the presets file
   msesh help agents     the agents file
   msesh help layout     layouts against recordings
-  msesh help hooks      what msesh writes into settings
+  msesh help hooks      what msesh writes into an agent's settings
   msesh help env        overriding any of these paths
 EOF
 }
@@ -807,15 +812,19 @@ EXAMPLES
     \$ msesh hooks install --dry-run
 
 COMMANDS
-  status           report whether it is installed, and what shares the file
-  install          add the Stop hook
-  remove           take it out again
+  status           report whether they are installed, and what shares the file
+  install          add both hooks
+  remove           take them out again
 
 OPTIONS
   --dry-run        with install or remove: print the change, write nothing
 
 FILES
-  $CLAUDE_SETTINGS
+  claude     $CLAUDE_SETTINGS
+
+  Named for the agent, not called 'settings', because it is Claude Code's
+  file and nothing else's — another agent's hooks go somewhere of its own,
+  and would be another row here.
 
   The Stop hook runs msesh-notify the moment a turn ends: the pane is marked,
   its window lights up, and 'msesh status' shows it as WAITING. Silence
@@ -2033,9 +2042,9 @@ PY
     # The difference between knowing a turn ended and guessing from silence.
     if [ -r "$CLAUDE_SETTINGS" ] &&
        grep -q '"_msesh"' "$CLAUDE_SETTINGS" 2>/dev/null; then
-      say ok "turn-end hook" "installed in $CLAUDE_SETTINGS"
+      say ok "claude hooks" "installed in $CLAUDE_SETTINGS"
     else
-      say warn "turn-end hook" "not installed — alerts fall back to the silence timer ('msesh hooks install')"
+      say warn "claude hooks" "not installed — alerts fall back to the silence timer ('msesh hooks install')"
     fi
 
     # The platform layer has to be installed beside msesh or nothing above
