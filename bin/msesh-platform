@@ -64,7 +64,8 @@ plat_tmux() {
   if plat_is_windows; then
     local root
     for root in ${MSESH_MSYS_ROOT:+"$MSESH_MSYS_ROOT"} /c/msys64 /d/msys64 \
-                /c/tools/msys64 "$HOME/scoop/apps/msys2/current"; do
+                /c/tools/msys64 "$HOME/scoop/apps/msys2/current" \
+                /c/cygwin64 /c/cygwin "$HOME/cygwin64"; do
       [ -x "$root/usr/bin/tmux.exe" ] || continue
       printf '%s' "$root/usr/bin/tmux.exe"; return 0
     done
@@ -77,18 +78,73 @@ plat_tmux() {
 # --- getting into a runtime that has tmux -------------------------------------
 # Unix returns immediately: there is only one runtime and it already has tmux.
 #
-# On Windows there are two POSIX emulations in play — Git for Windows' msys and
-# MSYS2's — and only MSYS2 ships tmux. Crossing between them is not optional and
-# not simple, so the whole of that reasoning lives here.
+# On Windows several POSIX runtimes may be present — WSL, MSYS2, Cygwin, and Git
+# for Windows' msys, which has no tmux at all. Crossing into one is not optional
+# and not simple, so the whole of that reasoning lives here.
+#
+# WSL is preferred, and the reason is measurable rather than aesthetic. A tmux
+# client under msys writes to the terminal through conpty, which charges per
+# write() rather than per byte; tmux emits many small screen updates, so it pays
+# that toll continuously. The same session, same terminal, same work: WSL draws
+# it in a fraction of a second where msys takes minutes. MSESH_RUNTIME=msys2
+# pins the old behaviour for anyone who wants it.
+
+# Is WSL a runtime we can actually hand a session to? It needs tmux, and it
+# needs the agent, because handing over to a runtime with no agent produces a
+# session full of panes that cannot start one. Both checks in a single
+# invocation: each wsl.exe call costs real time on a cold distro.
+plat_wsl_ready() {
+  case ${MSESH_RUNTIME:-} in msys2|cygwin) return 1 ;; esac
+  plat_wsl_usable
+}
+
+# The same probe without the preference check, so a machine that *has* a usable
+# WSL can be told apart from one that does not — the advice differs, and telling
+# someone to install what they already have is how diagnostics lose trust.
+plat_wsl_usable() {
+  command -v wsl.exe >/dev/null 2>&1 || return 1
+  local agent=${MSESH_AGENT_BIN:-claude}
+  MSESH_WSL_AGENT=$agent wsl.exe -e bash -lc '
+      command -v tmux >/dev/null 2>&1 || exit 1
+      command -v "$MSESH_WSL_AGENT" >/dev/null 2>&1 && exit 0
+      # A native install lands in ~/.local/bin, which root'"'"'s profile does not
+      # add to PATH — look before concluding the agent is missing.
+      [ -x "$HOME/.local/bin/$MSESH_WSL_AGENT" ] && exit 0
+      exit 1' >/dev/null 2>&1
+}
+
 plat_bootstrap() {
   local self=$1; shift
   [ -z "${MSESH_REEXEC:-}" ] || return 0
   [ ! -x /usr/bin/tmux ] && [ ! -x /usr/bin/tmux.exe ] || return 0
   plat_is_windows || return 0
 
+  # Preferred: hand over to WSL. Paths cross as Windows paths and are converted
+  # on the far side, because /c/... and /mnt/c/... are different spellings of
+  # the same directory and only the Windows one means the same thing to both.
+  if plat_wsl_ready; then
+    local selfwin argvwin cwdwin argv a rc
+    argv=$(mktemp 2>/dev/null || printf '/tmp/msesh.%s.argv' "$$")
+    : > "$argv"
+    for a in ${@+"$@"}; do printf '%s\n' "$a" >> "$argv"; done
+    selfwin=$(plat_windows_path "$self")
+    argvwin=$(plat_windows_path "$argv")
+    cwdwin=$(plat_windows_path "$PWD")
+    wsl.exe -e bash -lc '
+        s=$(wslpath -u "$1") || exit 1
+        f=$(wslpath -u "$2") || exit 1
+        d=$(wslpath -u "$3") 2>/dev/null && cd "$d" 2>/dev/null
+        MSESH_REEXEC=1 MSESH_ARGV_FILE="$f" exec bash "$s"
+      ' _ "$selfwin" "$argvwin" "$cwdwin"
+    rc=$?
+    rm -f "$argv"
+    exit $rc
+  fi
+
   local root
   for root in ${MSESH_MSYS_ROOT:+"$MSESH_MSYS_ROOT"} /c/msys64 /d/msys64 \
-              /c/tools/msys64 "$HOME/scoop/apps/msys2/current"; do
+              /c/tools/msys64 "$HOME/scoop/apps/msys2/current" \
+              /c/cygwin64 /c/cygwin "$HOME/cygwin64"; do
     [ -x "$root/usr/bin/bash.exe" ] && [ -x "$root/usr/bin/tmux.exe" ] || continue
 
     # -l for a full MSYS2 environment, CHERE_INVOKING so its profile leaves us
@@ -163,21 +219,32 @@ plat_open_tab() {
     windows|wsl)
       local wt=${WT_BIN:-wt.exe}
       if command -v "$wt" >/dev/null 2>&1; then
-        local profile=${WT_PROFILE:-MSYS2 UCRT64}
-        local start shellbin
-        start=$(cygpath -w "$workdir" 2>/dev/null || printf '%s' "$workdir")
-        shellbin=${MSYS_BASH:-C:/msys64/usr/bin/bash.exe}
+        local start profile
+        start=$(plat_windows_path "$workdir")
+        # The tab has to open a shell that can see *this* tmux server, and the
+        # two runtimes reach it differently. Under WSL the session lives on a
+        # socket inside the distro, which MSYS2's bash cannot open at all, so
+        # the tab has to go through wsl.exe. Under msys it is MSYS2's bash.
+        if [ "$(plat_os)" = wsl ]; then
+          set -- wsl.exe -e bash -lc "$attach_cmd"
+          # No profile default here: "MSYS2 UCRT64" is the wrong profile for a
+          # WSL tab and does not exist at all on a machine that never installed
+          # MSYS2, which is exactly the fresh install this path is for.
+          profile=${WT_PROFILE:-}
+        else
+          set -- "${MSYS_BASH:-C:/msys64/usr/bin/bash.exe}" -l -c "$attach_cmd"
+          profile=${WT_PROFILE:-MSYS2 UCRT64}
+        fi
         # --title is deliberately not passed: Windows Terminal treats it as an
         # override and stops honouring the escape sequence tmux sets titles
         # with. Fine for a static label, useless once the title is carrying
         # "which window is waiting on you". The caller passes a title only
         # when that mechanism is off.
         if [ -n "$title" ]; then
-          "$wt" -w 0 nt -p "$profile" -d "$start" --title "$title" \
-            "$shellbin" -l -c "$attach_cmd" && return 0
+          "$wt" -w 0 nt ${profile:+-p "$profile"} -d "$start" --title "$title" \
+            "$@" && return 0
         else
-          "$wt" -w 0 nt -p "$profile" -d "$start" \
-            "$shellbin" -l -c "$attach_cmd" && return 0
+          "$wt" -w 0 nt ${profile:+-p "$profile"} -d "$start" "$@" && return 0
         fi
       fi ;;
     macos)
@@ -215,6 +282,31 @@ plat_open_tab() {
       done ;;
   esac
   return 1
+}
+
+# How fast will a tmux client draw here, and what would make it faster?
+#
+# Prints "STATUS message", status first word, for doctor and the installer to
+# render. The wording lives here rather than in msesh because naming a runtime
+# is exactly what the platform layer is for.
+#
+# The measurement behind the warning: a tmux client under msys reaches the
+# terminal through conpty, which charges per write() rather than per byte, and
+# tmux emits many small screen updates. Same session, same terminal, same 40k
+# lines of output: WSL 0.13s, msys 679s. It is not a small difference and it is
+# not tmux's fault.
+plat_rendering() {
+  case $(plat_os) in
+    windows)
+      if plat_wsl_usable; then
+        printf 'warn %s' "conpty path — WSL is installed and far faster; \
+unset MSESH_RUNTIME to use it"
+      else
+        printf 'warn %s' "conpty path — heavy output redraws slowly; \
+install WSL with tmux and the agent"
+      fi ;;
+    *) printf 'ok %s' "drawing directly" ;;
+  esac
 }
 
 # Which opener plat_open_tab would use, without using it. For doctor.
@@ -326,6 +418,21 @@ plat_notifier() {
 plat_native_path() {
   if plat_is_windows && command -v cygpath >/dev/null 2>&1; then
     cygpath -m "$1" 2>/dev/null || printf '%s' "$1"
+  else
+    printf '%s' "$1"
+  fi
+}
+
+# A path a *Windows program* can use, for the times we hand one to Terminal or
+# cmd. Deliberately separate from plat_native_path: under WSL the agent is a
+# Linux program whose own config keys are Linux paths, so translating there
+# would write a key it will never match. Only the Windows-facing callers want
+# this. cygpath under msys, wslpath under WSL, identity if neither exists.
+plat_windows_path() {
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -w "$1" 2>/dev/null || printf '%s' "$1"
+  elif command -v wslpath >/dev/null 2>&1; then
+    wslpath -w "$1" 2>/dev/null || printf '%s' "$1"
   else
     printf '%s' "$1"
   fi
