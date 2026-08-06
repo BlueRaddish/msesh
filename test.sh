@@ -361,6 +361,33 @@ for os in linux macos windows wsl; do
   esac
 done
 
+# Rendering advice. Every branch must answer, because doctor and the installer
+# both split the first word off it — an empty answer would print a blank status
+# and read as "fine", which is the failure mode this whole check exists for.
+for os in linux macos windows wsl; do
+  out=$(MSESH_OS=$os bash -c ". '$SRC/msesh-platform'; plat_rendering" 2>&1)
+  case $out in
+    "ok "?*|"warn "?*) port_ok "rendering advice: $os" ;;
+    *) port_fail "rendering advice: $os" "expected 'ok ...' or 'warn ...', got: $out" ;;
+  esac
+done
+
+# Pinning a runtime must stop WSL being preferred, on a machine that has it and
+# a machine that does not alike — otherwise the escape hatch only works for
+# people who did not need it.
+out=$(MSESH_OS=windows MSESH_RUNTIME=msys2 \
+      bash -c ". '$SRC/msesh-platform'; plat_wsl_ready && echo preferred || echo pinned" 2>&1)
+case $out in
+  pinned) port_ok "MSESH_RUNTIME pins away from WSL" ;;
+  *)      port_fail "MSESH_RUNTIME pins away from WSL" "$out" ;;
+esac
+
+# A Windows-facing path must never come back empty: it is handed to Terminal as
+# a working directory, and an empty -d is how a tab silently fails to open.
+out=$(MSESH_OS=windows bash -c ". '$SRC/msesh-platform'; plat_windows_path /tmp" 2>&1)
+[ -n "$out" ] && port_ok "plat_windows_path answers" \
+               || port_fail "plat_windows_path answers" "empty"
+
 # --- help ----------------------------------------------------------------------
 # There was no coverage here at all until v1.1.0, which is exactly why the front
 # page still promised a Windows Terminal tab two releases after that stopped
