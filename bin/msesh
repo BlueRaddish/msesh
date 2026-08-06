@@ -878,6 +878,8 @@ ENVIRONMENT
   MSESH_TERMINAL        the terminal to open a session in, before the search
   MSESH_NOTIFY_CMD      a command taking TITLE BODY, before the search
   MSESH_OS              override platform detection (linux/macos/windows/wsl)
+  MSESH_RUNTIME         which runtime to hand over to (msys2/cygwin)
+  MSESH_AGENT_BIN       agent looked for when choosing a runtime  (default: claude)
   TMUX_BIN              tmux
   TERMINAL              honoured on Linux, as the usual convention
   MSESH_MSYS_ROOT       on Windows, an MSYS2 install root, if it is unusual
@@ -1981,6 +1983,12 @@ PY
     # every check under it depends on these answers, and because "which
     # notifier did you pick" is the question a silent toast actually poses.
     say ok platform "$(plat_os)"
+
+    # Whether panes will redraw at a usable speed. The difference between
+    # runtimes here is measured in orders of magnitude, not percent, so it
+    # belongs next to the platform line rather than buried at the bottom.
+    rendering=$(plat_rendering)
+    say "${rendering%% *}" rendering "${rendering#* }"
 
     if [ -x "$TMUX_BIN" ]; then
       say ok tmux "$("$TMUX_BIN" -V 2>/dev/null || echo "$TMUX_BIN")"

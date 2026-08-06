@@ -62,13 +62,29 @@ missing=0
 
 say "platform: $(plat_os)"
 
+# How fast panes will actually draw. Worth saying at install time rather than
+# leaving someone to discover it as "tmux is slow": the fix is a one-time
+# install, and it is much harder to change runtimes once sessions exist.
+rendering=$(plat_rendering)
+case ${rendering%% *} in
+  ok) say "rendering: ${rendering#* }" ;;
+  *)  warn "rendering: ${rendering#* }"
+      warn "      Heavy output can take minutes here that take under a second"
+      warn "      on WSL. Install it once (admin PowerShell):"
+      warn "        wsl --install -d Ubuntu"
+      warn "      then, inside it: apt install tmux, and install the agent."
+      warn "      msesh will prefer it automatically. Staying here still works." ;;
+esac
+
 tmux_bin=$(plat_tmux)
 if [ -x "$tmux_bin" ] || command -v "$tmux_bin" >/dev/null 2>&1; then
   say "tmux: $tmux_bin"
 else
   warn "tmux: NOT FOUND."
   case $(plat_os) in
-    windows|wsl) warn "      Install MSYS2 (https://www.msys2.org), then 'pacman -S tmux'." ;;
+    windows|wsl) warn "      Best: 'wsl --install -d Ubuntu', then 'apt install tmux' inside it."
+                 warn "      Otherwise MSYS2 (https://www.msys2.org), then 'pacman -S tmux' —"
+                 warn "      which works, but redraws far more slowly. See README." ;;
     macos)       warn "      brew install tmux" ;;
     *)           warn "      Install tmux from your package manager." ;;
   esac
