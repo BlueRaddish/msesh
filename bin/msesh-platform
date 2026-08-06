@@ -307,12 +307,20 @@ plat_open_tab() {
 plat_rendering() {
   case $(plat_os) in
     windows)
-      if plat_wsl_usable; then
-        printf 'warn %s' "conpty path — WSL is installed and far faster; \
-unset MSESH_RUNTIME to use it"
-      else
+      if ! plat_wsl_usable; then
         printf 'warn %s' "conpty path — heavy output redraws slowly; \
 install WSL with tmux and the agent"
+      elif [ -n "${MSESH_RUNTIME:-}" ]; then
+        # Pinned on purpose. Say which knob to let go of, not "install WSL":
+        # telling someone to install what they already have is how a
+        # diagnostic stops being read.
+        printf 'warn %s' "conpty path — pinned here by MSESH_RUNTIME; \
+unset it to use WSL, which is far faster"
+      else
+        # WSL is there and nothing is pinned, so a session built through msesh
+        # will land on it. Only the shell this command was typed into is here —
+        # which is normal for the installer, and worth not alarming anyone over.
+        printf 'ok %s' "sessions will use WSL — this shell is not where they run"
       fi ;;
     *) printf 'ok %s' "drawing directly" ;;
   esac

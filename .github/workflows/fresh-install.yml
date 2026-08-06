@@ -15,6 +15,59 @@ on:
   workflow_dispatch:
 
 jobs:
+  # A fresh *Windows* box, and specifically one with no WSL — which is what a
+  # hosted Windows runner is. That combination is the one the docs now steer
+  # away from, so it is the one most likely to rot: if msesh stops working
+  # there, nobody on the author's machine would notice.
+  first-run-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: tmux git
+
+      - name: nothing of msesh's exists yet
+        run: |
+          set -e
+          test ! -e "$HOME/.config/msesh" || { echo "config dir already present"; exit 1; }
+          command -v msesh >/dev/null && { echo "msesh already on PATH"; exit 1; } || true
+          echo "clean machine confirmed"
+
+      # The runner has no WSL, so this is the fallback path in the README. It
+      # must install, say so plainly, and still work.
+      - name: ./install.sh recommends WSL rather than failing without it
+        run: |
+          set -e
+          out=$(./install.sh --prefix "$HOME/.local/bin" 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          printf '%s' "$out" | grep -qi 'wsl' || {
+            echo "installer never mentioned WSL on a Windows box without it"; exit 1; }
+
+      - name: doctor reports the slow path instead of pretending
+        run: |
+          set -e
+          export PATH="$HOME/.local/bin:$PATH"
+          out=$(msesh doctor 2>&1) || true
+          echo "$out"
+          printf '%s' "$out" | grep -q 'rendering' || {
+            echo "doctor did not report rendering at all"; exit 1; }
+
+      # The floor: no WSL, no terminal worth opening, no agent installed. A
+      # session still has to build.
+      - name: a real build on the fallback runtime
+        run: |
+          set -e
+          export PATH="$HOME/.local/bin:$PATH"
+          msesh build 2 -s ci --no-tab --notify 0 -d "$HOME"
+          msesh status ci
+          msesh kill ci
+
   first-run:
     strategy:
       fail-fast: false
