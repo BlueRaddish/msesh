@@ -116,8 +116,10 @@ plat_wsl_usable() {
 plat_bootstrap() {
   local self=$1; shift
   [ -z "${MSESH_REEXEC:-}" ] || return 0
-  [ ! -x /usr/bin/tmux ] && [ ! -x /usr/bin/tmux.exe ] || return 0
   plat_is_windows || return 0
+  # Already in the runtime we would hand over to. Without this the probe below
+  # succeeds against ourselves and re-execs forever.
+  [ "$(plat_os)" != wsl ] || return 0
 
   # Preferred: hand over to WSL. Paths cross as Windows paths and are converted
   # on the far side, because /c/... and /mnt/c/... are different spellings of
@@ -140,6 +142,13 @@ plat_bootstrap() {
     rm -f "$argv"
     exit $rc
   fi
+
+  # Only worth hunting for another runtime if this one has no tmux of its own.
+  # Deliberately below the WSL block, not above it: "this runtime has tmux" and
+  # "this runtime can draw" are different questions, and msys answers yes to the
+  # first and no to the second. Someone who wants to stay put pins
+  # MSESH_RUNTIME.
+  [ ! -x /usr/bin/tmux ] && [ ! -x /usr/bin/tmux.exe ] || return 0
 
   local root
   for root in ${MSESH_MSYS_ROOT:+"$MSESH_MSYS_ROOT"} /c/msys64 /d/msys64 \
