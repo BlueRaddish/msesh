@@ -2,7 +2,7 @@
 
 Multi-session management for [Claude Code](https://claude.ai/code) and other coding agents. One command opens a tmux session of N panes in a new terminal tab, each pane running an agent, a shell, or anything you name.
 
-Runs on **Linux, macOS, Windows (MSYS2) and WSL** — tested on all three in CI, including under macOS's stock bash 3.2.
+Runs on **Linux, macOS and Windows** — tested on all three in CI, including under macOS's stock bash 3.2. **On Windows, use WSL**: msesh prefers it automatically, and the alternative redraws slowly enough to matter. See [Windows: use WSL](#windows-use-wsl).
 
 ```console
 $ msesh build 4                        # four shells, tiled, in a new tab
@@ -34,11 +34,11 @@ All three clear the moment you switch to that window. tmux only alerts on window
 
 Alerts are raised per *window*, never per pane — a window counts as silent only once every pane in it is — so the window is what gets highlighted. Build with `-w 1` if you would rather have one pane per window, and therefore one alert per pane.
 
-**Reachable from any shell.** `msesh` means the same thing typed into bash, zsh, fish, PowerShell, cmd, VS Code's terminal or the Windows Run box. On Windows, where tmux ships only with MSYS2, msesh hands itself over there transparently.
+**Reachable from any shell.** `msesh` means the same thing typed into bash, zsh, fish, PowerShell, cmd, VS Code's terminal or the Windows Run box. Windows has no tmux of its own, so msesh hands itself over to a runtime that has one — WSL for preference, then MSYS2 or Cygwin.
 
 ## Requirements
 
-- **tmux** and **bash**. That is the hard requirement. On Linux and macOS tmux is a package (`apt install tmux`, `brew install tmux`); on Windows it ships only with [MSYS2](https://www.msys2.org) (`pacman -S tmux`), and msesh hands itself over to MSYS2 from any other shell.
+- **tmux** and **bash**. That is the hard requirement. On Linux and macOS tmux is a package (`apt install tmux`, `brew install tmux`). Windows has none of its own: install [WSL](https://learn.microsoft.com/windows/wsl/install) and `apt install tmux` inside it, and msesh hands itself over from any other shell. [MSYS2](https://www.msys2.org) (`pacman -S tmux`) and Cygwin also work and are used as fallbacks, with the caveat below.
 - **A terminal emulator**, if you want msesh to open a window for you. It looks for Windows Terminal, iTerm/Terminal.app, or kitty/alacritty/wezterm/gnome-terminal/konsole and friends. Without one, msesh still builds the session and prints the attach command — which is the right behaviour on a headless box.
 - **A notifier**, if you want desktop toasts: `notify-send`, `terminal-notifier`/`osascript`, or Windows toast. Without one, alerts fall back to a tmux message.
 - **Claude Code** (or codex, or whatever you put in a preset) on `PATH`, if you want the agent presets to do anything.
@@ -50,6 +50,26 @@ Only the first is required; everything else degrades to something useful. `./ins
 Everything platform-specific lives in one file, `bin/msesh-platform`, which answers five questions: where tmux is, how to reach a runtime that has it, how to open a terminal, how to raise a notification, and how to spell a path. `bin/msesh` and `bin/msesh-notify` may not name an operating system or a platform binary at all — `./test.sh` enforces that with a grep, and CI runs the suite on Linux, macOS and MSYS2 on every push.
 
 msesh does not branch on OS names to decide what to run. It uses the OS only to *order* a list of candidates, then picks the first that exists — because the OS does not tell you what is installed, and "any platform, any installation" is mostly the second half.
+
+### Windows: use WSL
+
+**On Windows, run msesh under WSL.** It will get there by itself if it can — `plat_bootstrap` prefers WSL whenever WSL has both tmux and the agent — but it is worth understanding why, because the alternative is not a little slower.
+
+A tmux client running under MSYS2 or Cygwin reaches the terminal through **conpty**, Windows' pseudo-console. conpty charges a fixed cost **per `write()` call**, not per byte, and tmux draws by emitting many small screen updates. So tmux pays that toll continuously, while a program like `cat` — which writes in a few large blocks — does not. Measured on one machine, same terminal, same 4-pane session, same 40,000 lines of output:
+
+| runtime | time |
+|---|---|
+| WSL2 | **0.13 s** |
+| MSYS2, best available workaround | 164 s |
+| MSYS2, plain | 679 s |
+
+The same effect is what makes scrolling and agent output feel sluggish long before you notice it on a bulk dump. It is not tmux's fault and it is not fixable from inside msesh: the identical tmux binary is fast the moment conpty is out of the path.
+
+**If you cannot use WSL**, msesh still works — it falls back to MSYS2, then Cygwin, and `msesh doctor` will say so under `rendering`. Expect heavy output to redraw slowly. Some of it can be clawed back by wrapping the client in a relay that batches writes (`script -qc 'tmux attach -t NAME' /dev/null` is the zero-install version), but nothing on this path approaches WSL.
+
+**Two things to know about the WSL path.** A session built under WSL lives on a tmux server *inside* the distro, so sessions you created under MSYS2 are not visible to it and vice versa — they are separate servers, not a shared one. And your Windows files are reachable at `/mnt/c/...`, which is fine for editing and building; only tree-walking operations like `git status` are meaningfully slower there.
+
+`MSESH_RUNTIME=msys2` (or `cygwin`) pins the old behaviour if you want it.
 
 ## Install
 
@@ -352,6 +372,8 @@ Everything machine-specific is an environment variable, so msesh should work on 
 |---|---|
 | `CLAUDE_BIN`, `CLAUDE_FLAGS` | the Claude executable and its default flags |
 | `MSESH_OS` | override platform detection (`linux`, `macos`, `windows`, `wsl`) |
+| `MSESH_RUNTIME` | Windows: which runtime to hand over to — `msys2` or `cygwin` to stop preferring WSL |
+| `MSESH_AGENT_BIN` | the agent looked for when deciding whether WSL can host a session (default: `claude`) |
 | `MSESH_TERMINAL`, `TERMINAL` | the terminal to open a session in, tried before the search |
 | `MSESH_NOTIFY_CMD` | a command taking TITLE BODY, tried before the search |
 | `MSESH_MSYS_ROOT` | Windows: where MSYS2 lives, if it is somewhere unusual |
