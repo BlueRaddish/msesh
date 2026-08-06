@@ -38,7 +38,7 @@ Alerts are raised per *window*, never per pane — a window counts as silent onl
 
 ## Requirements
 
-- **tmux** and **bash**. That is the hard requirement. On Linux and macOS tmux is a package (`apt install tmux`, `brew install tmux`). Windows has none of its own: install [WSL](https://learn.microsoft.com/windows/wsl/install) and `apt install tmux` inside it, and msesh hands itself over from any other shell. [MSYS2](https://www.msys2.org) (`pacman -S tmux`) and Cygwin also work and are used as fallbacks, with the caveat below.
+- **tmux** and **bash**. That is the hard requirement. On Linux and macOS tmux is a package (`apt install tmux`, `brew install tmux`). Windows has none of its own: install [WSL](https://learn.microsoft.com/windows/wsl/install) (`wsl --install -d Ubuntu` from an admin PowerShell, possibly a reboot), then `apt install tmux` **and your agent** inside it — msesh only prefers WSL once both are there, since panes with no agent are worse than a slow session. It then hands itself over from any other shell. [MSYS2](https://www.msys2.org) (`pacman -S tmux`) and Cygwin also work and are used as fallbacks, with the caveat below.
 - **A terminal emulator**, if you want msesh to open a window for you. It looks for Windows Terminal, iTerm/Terminal.app, or kitty/alacritty/wezterm/gnome-terminal/konsole and friends. Without one, msesh still builds the session and prints the attach command — which is the right behaviour on a headless box.
 - **A notifier**, if you want desktop toasts: `notify-send`, `terminal-notifier`/`osascript`, or Windows toast. Without one, alerts fall back to a tmux message.
 - **Claude Code** (or codex, or whatever you put in a preset) on `PATH`, if you want the agent presets to do anything.

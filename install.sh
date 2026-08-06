@@ -70,10 +70,12 @@ case ${rendering%% *} in
   ok) say "rendering: ${rendering#* }" ;;
   *)  warn "rendering: ${rendering#* }"
       warn "      Heavy output can take minutes here that take under a second"
-      warn "      on WSL. Install it once (admin PowerShell):"
-      warn "        wsl --install -d Ubuntu"
-      warn "      then, inside it: apt install tmux, and install the agent."
-      warn "      msesh will prefer it automatically. Staying here still works." ;;
+      warn "      on WSL. Install it once, from an ADMIN PowerShell:"
+      warn "        wsl --install -d Ubuntu        (a reboot may be needed)"
+      warn "      then inside it: apt install tmux, and install the agent too —"
+      warn "      msesh only prefers WSL once BOTH are there, because panes"
+      warn "      with no agent are worse than a slow session."
+      warn "      Staying here still works." ;;
 esac
 
 tmux_bin=$(plat_tmux)
