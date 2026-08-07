@@ -104,6 +104,35 @@ fi
 # failure here is silent and successful: this runs in the agent's process tree,
 # and a notifier that prints an error into someone's session is worse than one
 # that quietly does nothing.
+# --resumed: you answered. The only reliable evidence that a mark has been
+# dealt with, because the terminal never tells tmux where you are looking —
+# so the mark is cleared by the thing you did, not by where you might be.
+# Clears this pane, and the window's alert with it once no pane still wants
+# anything, so switching windows is no longer the only thing that calms a
+# session down.
+if [ "${1:-}" = "--resumed" ]; then
+  pane=${2:-${TMUX_PANE:-}}
+  [ -n "$pane" ] || exit 0
+  [ -x "$TMUX_BIN" ] || command -v "$TMUX_BIN" >/dev/null 2>&1 || exit 0
+
+  info=$("$TMUX_BIN" display-message -t "$pane" -p '#{session_name}|#{window_index}|#{@msesh}' \
+    2>/dev/null) || exit 0
+  IFS='|' read -r sess widx stamp <<< "$info"
+  [ "$stamp" = 1 ] || exit 0
+
+  "$TMUX_BIN" set-option -p -t "$pane" -u @turn 2>/dev/null
+
+  still=$("$TMUX_BIN" list-panes -t "$sess:$widx" -F '#{@turn}' 2>/dev/null | grep -c .)
+  if [ "${still:-0}" -eq 0 ]; then
+    "$TMUX_BIN" set-window-option -t "$sess:$widx" @alert "" 2>/dev/null
+    "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified "" 2>/dev/null
+    "$TMUX_BIN" set-window-option -u -t "$sess:$widx" pane-border-style 2>/dev/null
+    "$TMUX_BIN" set-window-option -u -t "$sess:$widx" pane-active-border-style 2>/dev/null
+  fi
+  "$TMUX_BIN" refresh-client -S 2>/dev/null
+  exit 0
+fi
+
 # --needs-input: the agent is blocked ON YOU — a permission prompt, an idle
 # prompt, an MCP elicitation. This is the one alert that is always worth making,
 # and the only one that fires while a turn is still running: a permission
@@ -158,9 +187,18 @@ if [ "${1:-}" = "--turn-end" ]; then
   # "finished a turn" that exists.
   "$TMUX_BIN" set-option -p -t "$pane" @turn waiting 2>/dev/null
 
-  # On screen and being watched: the human already knows. Same rule tmux
-  # applies to its own alerts, kept deliberately rather than inherited.
-  if [ "$wactive" = 1 ] && [ "$sattached" -gt 0 ] 2>/dev/null; then exit 0; fi
+  # This used to exit here when the window was active and the session
+  # attached, on the theory that you were looking at it. The theory does not
+  # survive contact with a Terminal tab: tmux is told nothing about focus —
+  # not when a tab is switched, not even when another application takes the
+  # foreground; both were tested and no client-focus-in or -out ever arrived.
+  # "Attached with the active window" therefore means "the tab exists", which
+  # is not the same claim at all, and suppressing on it silenced the alert
+  # precisely when you were looking somewhere else.
+  #
+  # So it always reports. What makes the mark go away is answering — the
+  # --resumed path, driven by the agent's own "the human said something" event
+  # — rather than a guess about where your eyes are.
 
   # Mark the window the way the silence path would, so the two agree about what
   # a waiting window looks like.
@@ -217,6 +255,22 @@ highlight_on() {
   "$TMUX_BIN" set-window-option -t "$1" pane-active-border-style "fg=colour196,bold" 2>/dev/null
 }
 
+# Silence is not the same claim as "something wants you", and it should not
+# look like one. Nothing has printed for a while; that is worth noting and not
+# worth interrupting for, so the window dims instead of going red. Red is
+# reserved for a signal that something actually asked.
+idle_on() {
+  "$TMUX_BIN" set-window-option -t "$1" @idle 1 2>/dev/null
+  "$TMUX_BIN" set-window-option -t "$1" pane-border-style "fg=colour240" 2>/dev/null
+  "$TMUX_BIN" set-window-option -t "$1" pane-active-border-style "fg=colour244" 2>/dev/null
+}
+
+idle_off() {
+  "$TMUX_BIN" set-window-option -t "$1" @idle "" 2>/dev/null
+  "$TMUX_BIN" set-window-option -u -t "$1" pane-border-style 2>/dev/null
+  "$TMUX_BIN" set-window-option -u -t "$1" pane-active-border-style 2>/dev/null
+}
+
 highlight_off() {
   "$TMUX_BIN" set-window-option -t "$1" @alert "" 2>/dev/null
   "$TMUX_BIN" set-window-option -u -t "$1" pane-border-style 2>/dev/null
@@ -237,6 +291,7 @@ for row in ${rows[@]+"${rows[@]}"}; do
     [ -n "$notified" ] &&
       "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified "" 2>/dev/null
     [ -n "$alerted" ] && highlight_off "$sess:$widx"
+    idle_off "$sess:$widx"
     # Whatever set a pane's @turn, looking at the window answers it. Cleared
     # here rather than in the turn-end path because tmux has a hook for an
     # alert being raised and none for one being cleared — switching windows is
@@ -247,12 +302,17 @@ for row in ${rows[@]+"${rows[@]}"}; do
     continue
   fi
 
-  # This window is waiting, so mark it on screen — whether or not it is going
-  # to toast. A freshly built window is quiet because nothing has run in it
-  # yet, which is why the first alert's toast is swallowed; but a border
-  # colour interrupts no one, so it does not need that suppression, and a
-  # window that is genuinely waiting should look like it from the start.
-  [ -n "$alerted" ] || highlight_on "$sess:$widx"
+  # Mark it on screen — but as what it is. A silence flag means nothing has
+  # printed for a while, which is idleness, not a request: dimming says so
+  # without claiming your attention. Only the bell branch, where a program
+  # actually asked, keeps the red.
+  #
+  # Left dim on purpose even when a toast follows: the toast is the interrupt,
+  # the colour is just the map back to the window.
+  case $flags in
+    *1)  [ -n "$alerted" ] || highlight_on "$sess:$widx" ;;   # bell: something asked
+    *)   idle_on "$sess:$widx" ;;                             # silence: just quiet
+  esac
 
   [ -n "$notified" ] && continue          # already toasted this alert
   "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified 1 2>/dev/null

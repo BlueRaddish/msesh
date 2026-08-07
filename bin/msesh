@@ -1843,6 +1843,7 @@ case $ACTION in
     "$py" - "$CLAUDE_SETTINGS" "$HOOKS_SUB" "$dry" \
       "Stop=\"$NOTIFIER\" --turn-end" \
       "Notification=\"$NOTIFIER\" --needs-input" \
+      "UserPromptSubmit=\"$NOTIFIER\" --resumed" \
       "SessionStart=\"$NOTIFIER\" --session-start" <<'PY'
 import json, os, shutil, sys
 
