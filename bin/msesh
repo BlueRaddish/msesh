@@ -125,7 +125,7 @@ SESSION_SET=0
 # MSESH_DEFAULT_PRESET=claude restores the old behaviour for anyone who wants it.
 DEFAULT_PRESET=${MSESH_DEFAULT_PRESET:-shell}
 
-MSESH_VERSION=1.4.2
+MSESH_VERSION=1.6.1
 
 # The manifest and layout file format, which moves independently of the tool's
 # own version and only when the meaning of a key changes. Written into every
