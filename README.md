@@ -374,6 +374,9 @@ Everything machine-specific is an environment variable, so msesh should work on 
 | `MSESH_OS` | override platform detection (`linux`, `macos`, `windows`, `wsl`) |
 | `MSESH_RUNTIME` | Windows: which runtime to hand over to — `msys2` or `cygwin` to stop preferring WSL |
 | `MSESH_AGENT_BIN` | the agent looked for when deciding whether WSL can host a session (default: `claude`) |
+| `MSESH_REAP_AFTER` | seconds a session outlives its closed tab before msesh kills it, snapshotting first (default: `1800`; `0` keeps it forever) |
+| `MSESH_SNAPSHOT_DAYS` | how long session history is kept, in days (default: `60`; `0` keeps everything) |
+| `MSESH_SNAPSHOT_FULL_DAYS` | days kept at full fidelity before thinning to one a day (default: `7`) |
 | `MSESH_TERMINAL`, `TERMINAL` | the terminal to open a session in, tried before the search |
 | `MSESH_NOTIFY_CMD` | a command taking TITLE BODY, tried before the search |
 | `MSESH_MSYS_ROOT` | Windows: where MSYS2 lives, if it is somewhere unusual |

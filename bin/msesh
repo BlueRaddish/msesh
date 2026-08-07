@@ -900,6 +900,10 @@ ENVIRONMENT
   MSESH_OS              override platform detection (linux/macos/windows/wsl)
   MSESH_RUNTIME         which runtime to hand over to (msys2/cygwin)
   MSESH_AGENT_BIN       agent looked for when choosing a runtime  (default: claude)
+  MSESH_REAP_AFTER      seconds a closed session lives on         (default: 1800, 0 keeps it)
+  MSESH_SNAPSHOT_DAYS   days of session history to keep           (default: 60, 0 keeps all)
+  MSESH_SNAPSHOT_FULL_DAYS
+                        days kept in full before thinning to one a day (default: 7)
   TMUX_BIN              tmux
   TERMINAL              honoured on Linux, as the usual convention
   MSESH_MSYS_ROOT       on Windows, an MSYS2 install root, if it is unusual
@@ -1299,6 +1303,15 @@ resume_id_of() {
 # Kept: everything under a week, one a day for the next two months, nothing
 # older. Snapshots are small, but a session snapshotted on every kill for a
 # year is thousands of files in a directory people occasionally ls.
+# Thinning, not deleting: everything for the first week, then one a day, then
+# nothing. The two edges are settable because "how long is history worth
+# keeping" is a judgement about the machine, not about msesh — Claude Code
+# makes the same call adjustable as cleanupPeriodDays, and defaults it to 30.
+# MSESH_SNAPSHOT_DAYS=0 keeps everything, for anyone who would rather spend the
+# kilobytes than think about it.
+SNAPSHOT_FULL_DAYS=${MSESH_SNAPSHOT_FULL_DAYS:-7}
+SNAPSHOT_DAYS=${MSESH_SNAPSHOT_DAYS:-60}
+
 snapshot_prune() {
   local dir=$1 now day keep f base stamp age
   now=$(date +%s 2>/dev/null) || return 0
@@ -1308,8 +1321,8 @@ snapshot_prune() {
     stamp=${base%.conf}; stamp=${stamp##*-}         # trailing unix time
     case $stamp in ''|*[!0-9]*) continue ;; esac    # not ours; leave it alone
     age=$(( (now - stamp) / 86400 ))
-    [ "$age" -lt 7 ] && continue
-    if [ "$age" -gt 60 ]; then rm -f "$f"; continue; fi
+    [ "$age" -lt "$SNAPSHOT_FULL_DAYS" ] && continue
+    if [ "$SNAPSHOT_DAYS" != 0 ] && [ "$age" -gt "$SNAPSHOT_DAYS" ]; then rm -f "$f"; continue; fi
     day=$(( stamp / 86400 ))
     eval "keep=\${_snap_day_$day:-}"
     if [ -n "$keep" ]; then rm -f "$f"; else eval "_snap_day_$day=1"; fi
@@ -3053,8 +3066,23 @@ else
   #
   # MSESH_REAP_AFTER=0 keeps sessions forever, which is the old behaviour.
   if [ "$REAP_AFTER" != 0 ]; then
+    # Through msesh's own kill, not tmux's. Killing the session directly would
+    # take the panes and leave nothing behind: 'msesh kill' is what writes the
+    # snapshot — the window layout, each pane's directory, which conversation
+    # was in which pane — and that snapshot is the whole reason reaping is
+    # cheap rather than lossy. 'restore --resume' reads it and the session
+    # comes back as it was; without it, all that survives is the manifest's
+    # shape. The tmux kill stays as a fallback so a moved or uninstalled msesh
+    # cannot leave sessions accumulating forever.
+    # Snapshot first, then wait, then kill. The snapshot is taken the moment
+    # the tab closes rather than half an hour later, because the half hour is
+    # exactly when a machine gets rebooted: a session killed by a restart runs
+    # no hooks at all, so anything not already on disk is gone. Writing it up
+    # front costs ~1 KB and makes the reboot case as recoverable as a clean
+    # kill. The kill takes another one, which is the one that records how the
+    # session looked at the very end.
     "$TMUX_BIN" set-hook -t "$SESSION" client-detached \
-      "run-shell -b \"sleep $REAP_AFTER; tmux list-clients -t '$SESSION' 2>/dev/null | grep -q . || tmux kill-session -t '$SESSION'\""
+      "run-shell -b \"'$SELF_DIR/msesh' snapshot '$SESSION' >/dev/null 2>&1; sleep $REAP_AFTER; tmux list-clients -t '$SESSION' 2>/dev/null | grep -q . || '$SELF_DIR/msesh' kill '$SESSION' >/dev/null 2>&1 || tmux kill-session -t '$SESSION'\""
   else
     "$TMUX_BIN" set-hook -u -t "$SESSION" client-detached 2>/dev/null || true
   fi
