@@ -2812,8 +2812,30 @@ else
     # it as the end of the true branch.
     "$TMUX_BIN" set-window-option -t "$WIN" pane-border-format \
       ' #{?#{==:#{@turn},waiting},#[fg=colour196#,bold]<< WAITING >>#[default] ,}#{pane_index}: #{@label} ' >/dev/null
-    if [ "$NOTIFY_SILENCE" != 0 ]; then
-      "$TMUX_BIN" set-window-option -t "$WIN" monitor-silence "$NOTIFY_SILENCE" >/dev/null
+    # The silence timer answers "has anything printed lately", which is not the
+    # question. It exists because there was no way to know a turn had ended —
+    # but where the turn-end hook is installed and every pane in this window is
+    # an agent, there is, and leaving the timer armed only manufactures false
+    # positives: a window nobody has typed in for twenty seconds is idle, not
+    # waiting on you, and marking it red teaches you to ignore red.
+    #
+    # A window holding a shell keeps the timer, because for that pane silence
+    # really is the only signal there is. An explicit --notify always wins:
+    # someone who asked for the timer gets it.
+    # An empty @agent is a pane msesh did not put an agent in — a shell, or a
+    # literal command. One of those in the window is enough to keep the timer.
+    win_all_agents=1
+    if "$TMUX_BIN" list-panes -t "$WIN" -F '#{@agent}' 2>/dev/null | grep -q '^$'; then
+      win_all_agents=0
+    fi
+    if [ "$NOTIFY_SET" = 0 ] && [ "$win_all_agents" = 1 ] &&
+       [ -r "$CLAUDE_SETTINGS" ] && grep -q '"_msesh"' "$CLAUDE_SETTINGS" 2>/dev/null; then
+      NOTIFY_THIS=0
+    else
+      NOTIFY_THIS=$NOTIFY_SILENCE
+    fi
+    if [ "$NOTIFY_THIS" != 0 ]; then
+      "$TMUX_BIN" set-window-option -t "$WIN" monitor-silence "$NOTIFY_THIS" >/dev/null
       "$TMUX_BIN" set-window-option -t "$WIN" monitor-bell on >/dev/null
       # Explicitly off: activity monitoring restarts the silence countdown on
       # every byte a pane prints, so a window that is merely chatty never goes
