@@ -2796,13 +2796,22 @@ else
   for wname in "${WINDOWS[@]}"; do
     WIN="$SESSION:$wname"
     "$TMUX_BIN" set-window-option -t "$WIN" pane-border-status top >/dev/null
-    # The @alert branch is what msesh-notify switches on when this window
-    # raises an alert, so the toast and the screen agree about which block is
-    # waiting. A user option set on the window resolves for every pane in it,
-    # so one option lights the whole block. The comma inside the style has to
-    # be escaped or the format parser reads it as the end of the true branch.
+    # Two cues, deliberately at different scopes, because they answer different
+    # questions. The window's borders go red when anything in it is waiting —
+    # that is what catches your eye from another window. The WAITING tag is
+    # per pane: this format is rendered once per pane, and @turn is a *pane*
+    # option, so only the pane that actually finished a turn is marked.
+    #
+    # It used to switch on the window's @alert here, which meant every pane in
+    # a four-pane window claimed to be waiting and you had to guess which one.
+    # The silence timer still only knows about windows, so its alerts colour
+    # the borders and leave the tag off — nothing claims to be the pane when
+    # nothing knows which pane it was.
+    #
+    # The comma inside the style has to be escaped or the format parser reads
+    # it as the end of the true branch.
     "$TMUX_BIN" set-window-option -t "$WIN" pane-border-format \
-      ' #{?@alert,#[fg=colour196#,bold]<< WAITING >>#[default] ,}#{pane_index}: #{@label} ' >/dev/null
+      ' #{?#{==:#{@turn},waiting},#[fg=colour196#,bold]<< WAITING >>#[default] ,}#{pane_index}: #{@label} ' >/dev/null
     if [ "$NOTIFY_SILENCE" != 0 ]; then
       "$TMUX_BIN" set-window-option -t "$WIN" monitor-silence "$NOTIFY_SILENCE" >/dev/null
       "$TMUX_BIN" set-window-option -t "$WIN" monitor-bell on >/dev/null

@@ -294,6 +294,20 @@ else
   port_ok "no platform binaries outside msesh-platform"
 fi
 
+# The WAITING tag has to switch on a PANE option, not a window one. Window
+# options resolve for every pane in the window, so the old '#{?@alert,...}'
+# marked all four panes of a quad and left you guessing which had finished.
+# Nothing visual is covered by this suite — every check runs through
+# --dry-run — so this is a source check or it is nothing.
+fmt=$(grep -n 'pane-border-format' -A1 "$SRC/msesh" | grep 'WAITING' || true)
+case $fmt in
+  *'@turn'*) port_ok "the WAITING tag is per pane" ;;
+  *'?@alert'*) port_fail "the WAITING tag is per pane" \
+      "switches on the window option @alert, so every pane claims to be waiting" ;;
+  '') port_fail "the WAITING tag is per pane" "could not find the border format to check" ;;
+  *) port_fail "the WAITING tag is per pane" "unrecognised format: $fmt" ;;
+esac
+
 # macOS ships bash 3.2 and Apple will not move. These are the constructs that
 # would break there, and they are easier to ban than to remember.
 b4=$(grep -nE 'mapfile|readarray|declare -A|local -n|\[-1\]|\$\{[A-Za-z_]+,,\}' \
