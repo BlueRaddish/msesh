@@ -1778,16 +1778,32 @@ case $ACTION in
     # /clear' and 'msesh send work "look at src/"' should both mean one line
     # typed, and quoting a sentence is something people forget.
     text=${SEND_TEXT[*]}
-    targets=(); skipped=0
-    while IFS='|' read -r pid pagent plabel; do
+    targets=(); skipped=0; unstarted=0; unstarted_labels=()
+    while IFS='|' read -r pid pagent plabel pcmd; do
       [ -n "$pid" ] || continue
-      if [ "$SEND_ALL" = 1 ] || [ -n "$pagent" ]; then targets+=("$pid|$plabel")
-      else skipped=$((skipped + 1)); fi
+      if [ "$SEND_ALL" != 1 ] && [ -z "$pagent" ]; then
+        skipped=$((skipped + 1)); continue
+      fi
+      # A lazy pane has the agent's command *typed* and not run, so its
+      # foreground process is still the shell. Sending to it does not reach an
+      # agent — it appends to that unexecuted line and eats it, leaving the
+      # pane worse off than before, which msesh then reported as a success.
+      # An agent that is actually running is the foreground process, so the
+      # shell is the tell.
+      if [ "$SEND_ALL" != 1 ] && [ -n "$pagent" ] &&
+         printf '%s\n' $(plat_shell_commands) | grep -qx -- "$pcmd"; then
+        unstarted=$((unstarted + 1)); unstarted_labels+=("${plabel:-$pid}"); continue
+      fi
+      targets+=("$pid|$plabel")
     done < <("$TMUX_BIN" list-panes -s -t "=$SESSION" \
-      -F '#{pane_id}|#{@agent}|#{@label}' 2>/dev/null)
+      -F '#{pane_id}|#{@agent}|#{@label}|#{pane_current_command}' 2>/dev/null)
 
     if [ "${#targets[@]}" = 0 ]; then
-      [ "$skipped" = 0 ] && die "no panes in '$SESSION'"
+      [ "$skipped" = 0 ] && [ "$unstarted" = 0 ] && die "no panes in '$SESSION'"
+      if [ "$unstarted" != 0 ]; then
+        ul=$(printf '%s, ' "${unstarted_labels[@]}"); ul=${ul%, }
+        die "no started agent in '$SESSION' — $unstarted pane(s) still have the command typed and not run ($ul); press Enter there, or '--all' to type into the shell anyway"
+      fi
       die "no agent panes in '$SESSION' — $skipped pane(s) skipped ('--all' to type into every one)"
     fi
 
@@ -1804,6 +1820,10 @@ case $ACTION in
       echo "msesh: typed into ${#targets[@]} pane(s) in '$SESSION', not submitted — $labels"
     fi
     [ "$skipped" != 0 ] && echo "msesh: skipped $skipped non-agent pane(s)"
+    if [ "$unstarted" != 0 ]; then
+      ul=$(printf '%s, ' "${unstarted_labels[@]}"); ul=${ul%, }
+      echo "msesh: skipped $unstarted pane(s) whose agent is not started yet — $ul"
+    fi
     exit 0 ;;
   hooks)
     # Claude Code fires a Stop hook the moment a turn ends. That is the signal
@@ -2348,12 +2368,20 @@ if [ "$RESTORE" = 1 ]; then
     { snapfallback=$(snapshot_newest "$SESSION" 2>/dev/null || true)
       [ -n "$snapfallback" ] && conf_read "$snapfallback"; } ||
     die "no manifest or layout for '$SESSION' (msesh list shows what is known)"
-elif [ "${#SPECS[@]}" -eq 0 ] && ! session_exists "$SESSION"; then
+elif [ "${#SPECS[@]}" -eq 0 ] && { ! session_exists "$SESSION" || [ "$FRESH" = 1 ]; }; then
   # An if rather than `manifest_load && echo`: that list's status is the whole
   # branch's status, so with `set -e` a session that had no manifest used to
   # end the script here instead of falling through to build a default pane.
+  #
+  # The FRESH arm is why 'rebuild' with no specs is not destructive. It used to
+  # be gated on the session *not* existing, which is exactly the case rebuild is
+  # never in: so a bare rebuild built the default one pane and then wrote that
+  # over the manifest's spec list. A three-pane session came back as one and
+  # restore could not recover it — the record was gone, not just the session.
+  # Reading the manifest first is also what 'msesh help' has always promised.
   if manifest_load "$SESSION"; then
-    echo "msesh: restoring '$SESSION' from its manifest"
+    [ "$FRESH" = 1 ] && echo "msesh: rebuilding '$SESSION' from its manifest" \
+                     || echo "msesh: restoring '$SESSION' from its manifest"
   elif layout_load "$SESSION"; then
     echo "msesh: building '$SESSION' from its layout"
   elif [ "$ATTACH_ONLY" = 1 ]; then

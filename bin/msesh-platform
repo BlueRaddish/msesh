@@ -428,6 +428,19 @@ plat_notifier() {
   return 1
 }
 
+# Which foreground commands mean "a shell is sitting here", as opposed to a
+# program the pane was given. 'send' uses it to tell an agent that is running
+# from one that is only typed out and never started — the pane's foreground
+# process is the shell in the second case, and typing at it eats the line.
+#
+# Here rather than in msesh because the tail of the list is platform-specific
+# and msesh may not name a platform binary.
+plat_shell_commands() {
+  printf '%s\n' bash sh zsh fish dash ksh
+  plat_is_windows && printf '%s\n' pwsh powershell cmd
+  return 0
+}
+
 # --- paths --------------------------------------------------------------------
 # Only Claude Code's config needs this: it stores project keys as native paths.
 # Identity everywhere except Windows, where the msys view and the native view
