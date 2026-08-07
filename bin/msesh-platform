@@ -115,7 +115,22 @@ plat_wsl_usable() {
 
 plat_bootstrap() {
   local self=$1; shift
-  [ -z "${MSESH_REEXEC:-}" ] || return 0
+  # MSESH_NO_BOOTSTRAP is the "do not hand over at all" switch, for a caller
+  # that knows it is already in the right runtime — the test suite, mainly.
+  # Kept separate from MSESH_REEXEC so a harness cannot arm the guard below by
+  # accident and leave a shell that skips the handover for real.
+  [ -z "${MSESH_NO_BOOTSTRAP:-}" ] || return 0
+
+  # MSESH_REEXEC means "this process *is* the far side of a handover". A shell
+  # carrying it in from somewhere else is lying — and believing it means
+  # driving another runtime's tmux from this one, whose symptom is a
+  # 'tmux new-session' that never returns and cannot be killed. So it is only
+  # honoured where it could be true: in a runtime that actually has tmux.
+  if [ -n "${MSESH_REEXEC:-}" ]; then
+    if [ -x /usr/bin/tmux ] || [ -x /usr/bin/tmux.exe ]; then return 0; fi
+    printf 'msesh: ignoring a stale MSESH_REEXEC — this runtime has no tmux\n' >&2
+    unset MSESH_REEXEC
+  fi
   plat_is_windows || return 0
   # Already in the runtime we would hand over to. Without this the probe below
   # succeeds against ourselves and re-execs forever.

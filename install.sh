@@ -47,10 +47,16 @@ done
 say()  { printf 'install: %s\n' "$*"; }
 warn() { printf 'install: %s\n' "$*" >&2; }
 
+# Where this clone is. Needed before the copy, which stamps it beside the
+# installed files, and again at the end for the completion lines.
+SRC_DIR=$(cd "$(dirname "$0")" && pwd)
+
 if [ "$UNINSTALL" = 1 ]; then
   for f in $FILES; do
     [ -e "$PREFIX/$f" ] && rm -f "$PREFIX/$f" && say "removed $PREFIX/$f"
   done
+  [ -e "$PREFIX/.msesh-source" ] && rm -f "$PREFIX/.msesh-source" &&
+    say "removed $PREFIX/.msesh-source"
   exit 0
 fi
 
@@ -145,6 +151,14 @@ done
 
 chmod +x "$PREFIX/msesh" "$PREFIX/msesh-notify" 2>/dev/null || true
 
+# Leave a note saying where this came from, so the *installed* msesh can tell
+# whether the clone has moved on without it. doctor could already spot that
+# drift, but only when run from the clone — which is the direction that does
+# not need warning about. The direction that does is the normal one: you edited
+# the clone, forgot to install, and are now running the stale copy, where msesh
+# has nothing to compare against unless it was told.
+printf '%s\n' "$SRC_DIR" > "$PREFIX/.msesh-source" 2>/dev/null || true
+
 # Where "on PATH" is checked, and what to do about it, are both platform
 # questions: a line in a shell rc is the right answer on Unix and exactly the
 # wrong one on Windows, where PowerShell, cmd and the Run box never read it.
@@ -160,7 +174,6 @@ esac
 # of the binaries, which are copied. Editing someone's .bashrc or $PROFILE
 # behind their back is the kind of thing an installer should ask about, and
 # this one has no way to ask.
-SRC_DIR=$(cd "$(dirname "$0")" && pwd)
 if [ -r "$SRC_DIR/completion/msesh.bash" ]; then
   case " $(complete -p msesh 2>/dev/null || true) " in
     *" msesh "*) say "completion: already active in this shell" ;;

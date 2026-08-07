@@ -33,9 +33,15 @@ export MSESH_STATE=$ROOT/sessions
 export MSESH_LAYOUTS=$ROOT/layouts
 export MSESH_PRESETS=$ROOT/presets.conf
 export MSESH_AGENTS=$ROOT/agents.conf
-# Stops the re-exec into MSYS2: this script is already wherever it needs to be,
-# and a second hop would lose the environment above.
-export MSESH_REEXEC=1
+# Stops the handover into another runtime: this script is already wherever it
+# needs to be, and a second hop would lose the environment above.
+#
+# Its own variable on purpose. This used to set MSESH_REEXEC, the flag the
+# handover itself sets to mean "already crossed over" — so any shell that
+# carried it out of a test run would skip the handover for real, and drive
+# MSYS2's tmux from Git Bash, whose symptom is a 'tmux new-session' that never
+# returns and cannot be killed. A test harness should not be able to arm that.
+export MSESH_NO_BOOTSTRAP=1
 export CLAUDE_BIN=claude CLAUDE_FLAGS=--remote-control
 # Pointed at the scratch tree before a single check runs, so that no bug in
 # 'msesh hooks' — and no test added later in a hurry — can reach the real

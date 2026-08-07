@@ -2071,6 +2071,25 @@ PY
       else
         say warn "installed copy" "$onpath differs from $0 — re-run ./install.sh"
       fi
+    elif [ -n "$onpath" ]; then
+      # Running the installed copy, which is the normal way and the direction
+      # that actually needs warning about: you edited the clone, forgot to
+      # install, and this stale one is what runs. It has nothing to compare
+      # against on its own, so install.sh leaves a note saying where it came
+      # from. Absent note means an older install, not a problem — say nothing.
+      srcnote="$(dirname "$onpath")/.msesh-source"
+      if [ -r "$srcnote" ]; then
+        srcdir=$(head -1 "$srcnote" 2>/dev/null)
+        if [ -n "$srcdir" ] && [ -r "$srcdir/bin/msesh" ]; then
+          if [ "$(plat_checksum "$srcdir/bin/msesh")" = "$(plat_checksum "$onpath")" ]; then
+            say ok "installed copy" "matches its source ($srcdir)"
+          else
+            say warn "installed copy" "older than $srcdir/bin/msesh — re-run ./install.sh"
+          fi
+        elif [ -n "$srcdir" ]; then
+          say ok "installed copy" "source $srcdir is gone; nothing to compare"
+        fi
+      fi
     fi
 
     # The difference between knowing a turn ended and guessing from silence.
@@ -2090,17 +2109,31 @@ PY
       say FAIL "platform layer" "missing beside $0 — re-run ./install.sh"
     fi
 
-    for pair in "presets:$PRESET_FILE" "agents:$AGENT_FILE"; do
-      lbl=${pair%%:*}; f=${pair#*:}
-      if [ ! -e "$f" ];   then say ok "$lbl" "none yet ($f)"
-      elif [ -r "$f" ];   then say ok "$lbl" "$f"
-      else                     say FAIL "$lbl" "$f is not readable"; fi
+    # Say when a path was redirected, and by what. "Exists and is readable" is
+    # not the question anyone is actually asking here — the question is
+    # whether it is the file you meant — and a healthy-looking row for a
+    # directory pointed somewhere else once cost forty minutes hunting a
+    # layout that had never gone missing. Naming the variable answers it in
+    # the row rather than in a debugging session.
+    via() {  # via VAR_NAME -> " (via VAR_NAME)" when that variable is set
+      eval "[ -n \"\${$1:-}\" ]" && printf ' (via %s)' "$1"
+      return 0
+    }
+
+    for pair in "presets:$PRESET_FILE:MSESH_PRESETS" "agents:$AGENT_FILE:MSESH_AGENTS"; do
+      lbl=${pair%%:*}; rest=${pair#*:}; f=${rest%:*}; var=${rest##*:}
+      src=$(via "$var")
+      if [ ! -e "$f" ];   then say ok "$lbl" "none yet ($f)$src"
+      elif [ -r "$f" ];   then say ok "$lbl" "$f$src"
+      else                     say FAIL "$lbl" "$f is not readable$src"; fi
     done
 
-    for pair in "layouts:$LAYOUT_DIR" "manifests:$MANIFEST_DIR"; do
-      lbl=${pair%%:*}; d=${pair#*:}
-      if mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; then say ok "$lbl" "$d"
-      else say FAIL "$lbl" "$d is not writable"; fi
+    for pair in "layouts:$LAYOUT_DIR:MSESH_LAYOUTS" "manifests:$MANIFEST_DIR:MSESH_STATE"; do
+      lbl=${pair%%:*}; rest=${pair#*:}; d=${rest%:*}; var=${rest##*:}
+      src=$(via "$var")
+      [ -n "$src" ] || src=$(via MSESH_HOME)
+      if mkdir -p "$d" 2>/dev/null && [ -w "$d" ]; then say ok "$lbl" "$d$src"
+      else say FAIL "$lbl" "$d is not writable$src"; fi
     done
 
     echo
