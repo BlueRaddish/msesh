@@ -104,6 +104,44 @@ fi
 # failure here is silent and successful: this runs in the agent's process tree,
 # and a notifier that prints an error into someone's session is worse than one
 # that quietly does nothing.
+# --needs-input: the agent is blocked ON YOU — a permission prompt, an idle
+# prompt, an MCP elicitation. This is the one alert that is always worth making,
+# and the only one that fires while a turn is still running: a permission
+# request arrives mid-turn, so the turn-end hook never sees it. Being "attached
+# with the window active" is not evidence you are looking, either — the session
+# is a Terminal tab, and tmux cannot tell a foreground tab from a background
+# one, so suppressing on that would silence exactly the case this exists for.
+if [ "${1:-}" = "--needs-input" ]; then
+  pane=${2:-${TMUX_PANE:-}}
+  [ -n "$pane" ] || exit 0
+  [ -x "$TMUX_BIN" ] || command -v "$TMUX_BIN" >/dev/null 2>&1 || exit 0
+
+  # The hook fires for every notification the agent raises, including ones that
+  # want nothing from you (auth succeeded, agent finished). Read the payload and
+  # keep only the kinds that mean "blocked, waiting on a human". Unparseable or
+  # absent input is treated as interesting: a missed prompt is worse than an
+  # extra toast, and a payload we do not understand is not evidence of calm.
+  payload=$(cat 2>/dev/null || true)
+  case $payload in
+    *permission_prompt*|*idle_prompt*|*agent_needs_input*|*elicitation_dialog*|'') ;;
+    *) exit 0 ;;
+  esac
+
+  info=$("$TMUX_BIN" display-message -t "$pane" -p \
+    '#{session_name}|#{window_index}|#{@label}|#{@msesh}' 2>/dev/null) || exit 0
+  IFS='|' read -r sess widx label stamp <<< "$info"
+  [ "$stamp" = 1 ] || exit 0
+
+  "$TMUX_BIN" set-option -p -t "$pane" @turn input 2>/dev/null
+  "$TMUX_BIN" set-window-option -t "$sess:$widx" @alert 1 2>/dev/null
+  "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified 1 2>/dev/null
+  "$TMUX_BIN" refresh-client -S 2>/dev/null
+
+  toast "msesh: ${label:-a pane} needs you — $sess" \
+        "Window $widx is blocked waiting for your input."
+  exit 0
+fi
+
 if [ "${1:-}" = "--turn-end" ]; then
   pane=${2:-${TMUX_PANE:-}}
   [ -n "$pane" ] || exit 0                     # not in tmux; nothing to mark

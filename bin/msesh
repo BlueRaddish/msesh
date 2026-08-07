@@ -85,6 +85,10 @@ NOTIFY_SILENCE=20
 ADD=0
 FRESH=0
 EPHEMERAL=0
+# How long a session survives with nobody attached, in seconds. 30 minutes:
+# long enough that closing a tab by mistake costs nothing, short enough that a
+# week of closed tabs is not still holding agents. 0 disables reaping.
+REAP_AFTER=${MSESH_REAP_AFTER:-1800}
 OPEN_TAB=1
 PRESEED_TRUST=1
 DRY_RUN=0
@@ -1838,6 +1842,7 @@ case $ACTION in
     # having only the second would record ids nothing ever reads.
     "$py" - "$CLAUDE_SETTINGS" "$HOOKS_SUB" "$dry" \
       "Stop=\"$NOTIFIER\" --turn-end" \
+      "Notification=\"$NOTIFIER\" --needs-input" \
       "SessionStart=\"$NOTIFIER\" --session-start" <<'PY'
 import json, os, shutil, sys
 
@@ -2810,8 +2815,11 @@ else
     #
     # The comma inside the style has to be escaped or the format parser reads
     # it as the end of the true branch.
+    # Two states, and the difference matters: INPUT means the agent is blocked
+    # on you right now, WAITING means it finished and the next move is yours.
+    # Only the first is urgent, so only the first is red.
     "$TMUX_BIN" set-window-option -t "$WIN" pane-border-format \
-      ' #{?#{==:#{@turn},waiting},#[fg=colour196#,bold]<< WAITING >>#[default] ,}#{pane_index}: #{@label} ' >/dev/null
+      ' #{?#{==:#{@turn},input},#[fg=colour196#,bold]<< INPUT NEEDED >>#[default] ,#{?#{==:#{@turn},waiting},#[fg=colour214#,bold]<< done >>#[default] ,}}#{pane_index}: #{@label} ' >/dev/null
     # The silence timer answers "has anything printed lately", which is not the
     # question. It exists because there was no way to know a turn had ended —
     # but where the turn-end hook is installed and every pane in this window is
@@ -2834,13 +2842,17 @@ else
     else
       NOTIFY_THIS=$NOTIFY_SILENCE
     fi
+    # A bell is a real event a program chose to raise, not an inference from
+    # nothing happening, so it is monitored whatever the silence timer is doing.
+    # Turning it off with the timer was an accident of them sharing a block.
+    "$TMUX_BIN" set-window-option -t "$WIN" monitor-bell on >/dev/null
+    # Explicitly off: activity monitoring restarts the silence countdown on
+    # every byte a pane prints, so a window that is merely chatty never goes
+    # quiet enough to alert. The two monitors do not compose.
+    "$TMUX_BIN" set-window-option -t "$WIN" monitor-activity off >/dev/null
+
     if [ "$NOTIFY_THIS" != 0 ]; then
       "$TMUX_BIN" set-window-option -t "$WIN" monitor-silence "$NOTIFY_THIS" >/dev/null
-      "$TMUX_BIN" set-window-option -t "$WIN" monitor-bell on >/dev/null
-      # Explicitly off: activity monitoring restarts the silence countdown on
-      # every byte a pane prints, so a window that is merely chatty never goes
-      # quiet enough to alert. The two monitors do not compose.
-      "$TMUX_BIN" set-window-option -t "$WIN" monitor-activity off >/dev/null
       # A window that was built seconds ago is quiet because nothing has run in
       # it yet, not because it wants you. Pre-stamp it as already-notified so
       # that first alert is swallowed; the notifier re-arms the window once you
@@ -2942,6 +2954,25 @@ if [ "$EPHEMERAL" = 1 ]; then
 else
   "$TMUX_BIN" set-hook -u -t "$SESSION" client-attached 2>/dev/null || true
   "$TMUX_BIN" set-option -t "$SESSION" destroy-unattached off
+
+  # Outliving the tab is the point, but outliving it forever is just litter:
+  # close four tabs over a morning and the sessions are all still there,
+  # holding agents nobody is talking to. So a closed session is reaped after
+  # MSESH_REAP_AFTER seconds — long enough that closing a tab by accident, or
+  # detaching to move it, costs nothing, short enough that it does not pile up.
+  #
+  # Armed on detach, checked again when it fires: re-attaching in the meantime
+  # cancels it, because the check is "is anyone here now", not "was anyone here
+  # when the timer started". Several timers can be in flight after several
+  # detaches and they all agree.
+  #
+  # MSESH_REAP_AFTER=0 keeps sessions forever, which is the old behaviour.
+  if [ "$REAP_AFTER" != 0 ]; then
+    "$TMUX_BIN" set-hook -t "$SESSION" client-detached \
+      "run-shell -b \"sleep $REAP_AFTER; tmux list-clients -t '$SESSION' 2>/dev/null | grep -q . || tmux kill-session -t '$SESSION'\""
+  else
+    "$TMUX_BIN" set-hook -u -t "$SESSION" client-detached 2>/dev/null || true
+  fi
 fi
 
 [ "$OPEN_TAB" = 1 ] || { echo "msesh: '$SESSION' ready (not attached)"; exit 0; }

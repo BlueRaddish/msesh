@@ -299,13 +299,15 @@ fi
 # marked all four panes of a quad and left you guessing which had finished.
 # Nothing visual is covered by this suite — every check runs through
 # --dry-run — so this is a source check or it is nothing.
-fmt=$(grep -n 'pane-border-format' -A1 "$SRC/msesh" | grep 'WAITING' || true)
+# Matched on the format's own body rather than the words in the tag, so
+# rewording the tag does not fail the check and changing the mechanism does.
+fmt=$(grep -F '#{pane_index}: #{@label}' "$SRC/msesh" || true)
 case $fmt in
-  *'@turn'*) port_ok "the WAITING tag is per pane" ;;
-  *'?@alert'*) port_fail "the WAITING tag is per pane" \
+  *'?@alert'*) port_fail "the pane tag is per pane" \
       "switches on the window option @alert, so every pane claims to be waiting" ;;
-  '') port_fail "the WAITING tag is per pane" "could not find the border format to check" ;;
-  *) port_fail "the WAITING tag is per pane" "unrecognised format: $fmt" ;;
+  *'@turn'*) port_ok "the pane tag is per pane" ;;
+  '') port_fail "the pane tag is per pane" "could not find the border format to check" ;;
+  *) port_fail "the pane tag is per pane" "unrecognised format: $fmt" ;;
 esac
 
 # macOS ships bash 3.2 and Apple will not move. These are the constructs that
