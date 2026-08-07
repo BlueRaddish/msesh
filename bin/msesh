@@ -139,7 +139,23 @@ MSESH_FORMAT=2
 # pre-seeds; the second holds hooks, and is where 'msesh hooks' installs the
 # turn-end signal. Both are Claude Code's, not msesh's, which is why everything
 # that touches them says so in its name.
-CLAUDE_SETTINGS=${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}
+# CLAUDE_CONFIG_DIR moves both of them, and moves them asymmetrically: the
+# settings file goes to D/settings.json — NOT D/.claude/settings.json — while
+# the trust record, which normally sits *beside* ~/.claude as ~/.claude.json,
+# moves *inside* as D/.claude.json. Established by experiment against claude
+# 2.1.221, not from documentation: a malformed D/settings.json is reported by
+# 'claude doctor' as invalid, while the same file one level down is ignored.
+#
+# Getting this wrong is silent in the worst way. On a machine with the variable
+# set — a second account, a sandbox, a CI image — msesh would write a settings
+# file Claude Code never reads, report success, and have 'hooks status' agree,
+# while the turn-end signal simply never arrived.
+CLAUDE_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+  CLAUDE_SETTINGS=${CLAUDE_SETTINGS:-$CLAUDE_CONFIG_DIR/settings.json}
+else
+  CLAUDE_SETTINGS=${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}
+fi
 
 # --- agents ------------------------------------------------------------------
 # Some panes hold an interactive coding agent rather than a shell, and two of
@@ -2687,7 +2703,14 @@ fi
 # Every claude pane otherwise stops on "do you trust the files in this folder?",
 # so record the answer up front. claude walks the tree upwards, so an
 # already-trusted ancestor means there is nothing to write.
-CLAUDE_JSON=${CLAUDE_JSON:-$HOME/.claude.json}
+# Beside ~/.claude by default, inside the directory when CLAUDE_CONFIG_DIR
+# relocates it — see the note where CLAUDE_SETTINGS is set for why that
+# asymmetry is real and not a typo.
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+  CLAUDE_JSON=${CLAUDE_JSON:-$CLAUDE_CONFIG_DIR/.claude.json}
+else
+  CLAUDE_JSON=${CLAUDE_JSON:-$HOME/.claude.json}
+fi
 
 preseed_trust() {
   local py native_dir
