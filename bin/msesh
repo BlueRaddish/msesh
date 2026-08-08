@@ -94,6 +94,8 @@ PRESEED_TRUST=1
 DRY_RUN=0
 SEND_ENTER=1
 SEND_ALL=0
+SEND_TARGET=            # pane index, or 'all'
+SEND_TARGET_MAYBE=      # a word that is a target only if it names a pane
 ACTION=
 RESTORE=0
 RESUME=0
@@ -1110,7 +1112,18 @@ case $ACTION in
       die "send needs a session and something to type: msesh send work \"/clear\""
     fi
     SESSION=${ARGS[0]}; SESSION_SET=1
-    SEND_TEXT=("${ARGS[@]:1}") ;;
+    # An optional target between the session and the text: a pane number, a
+    # pane label, or 'all'. Taken as a target only when there is text after it
+    # and it looks like one — so 'msesh send work 2' still types "2" into the
+    # session rather than silently addressing pane 2 and sending nothing.
+    SEND_TEXT=("${ARGS[@]:1}")
+    if [ "${#ARGS[@]}" -ge 3 ]; then
+      case ${ARGS[1]} in
+        all|ALL)            SEND_TARGET=all;      SEND_TEXT=("${ARGS[@]:2}") ;;
+        ''|*[!0-9]*)        SEND_TARGET_MAYBE=${ARGS[1]} ;;   # a label, checked later
+        *)                  SEND_TARGET=${ARGS[1]}; SEND_TEXT=("${ARGS[@]:2}") ;;
+      esac
+    fi ;;
   layout)
     LAYOUT_SUB=${ARGS[0]:-list}
     if [ "${#ARGS[@]}" -gt 1 ]; then LAYOUT_ARGS=("${ARGS[@]:1}"); fi ;;
@@ -1143,6 +1156,48 @@ TMUX_BIN=$(plat_tmux)
 [ -x "$TMUX_BIN" ] || [ "$ACTION" = doctor ] || die "tmux not found ($TMUX_BIN)"
 
 session_exists() { "$TMUX_BIN" has-session -t "=$1" 2>/dev/null; }
+
+# A name for a session nobody named. The directory you are standing in is a
+# better guess than a constant: it is what the session is *about*, it differs
+# between projects so two builds do not collide, and it is what you would have
+# typed. Sanitised to the characters a session name may hold, and falling back
+# to the old constant when nothing survives that.
+session_name_from_dir() {
+  local n=${PWD##*/}
+  n=$(printf '%s' "$n" | tr -c 'A-Za-z0-9._-' '-' | sed 's/^-*//; s/-*$//')
+  [ -n "$n" ] || n=msesh
+  printf '%s' "$n"
+}
+
+# What to say when a verb that acts on a session was not told which one.
+# Guessing is how 'msesh restore' quietly resurrected a session called msesh:
+# the default name was a constant, so the command always had *something* to
+# act on and never looked like it was missing an argument.
+name_required() {
+  local verb=$1
+  printf 'msesh: %s needs a session name.\n\n' "$verb" >&2
+  local any=0 n
+  printf 'running now:\n' >&2
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    any=1; printf '  %s\n' "$n" >&2
+  done < <("$TMUX_BIN" list-sessions -F '#{session_name}' 2>/dev/null || true)
+  [ "$any" = 1 ] || printf '  (none)\n' >&2
+  any=0
+  printf 'closed, but recorded:\n' >&2
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    session_is_live "$n" && continue
+    any=1; printf '  %s\n' "$n" >&2
+  done < <(manifest_names 2>/dev/null || true)
+  [ "$any" = 1 ] || printf '  (none)\n' >&2
+  printf '\n  msesh %s NAME\n' "$verb" >&2
+  case $verb in
+    kill)    printf '  msesh kill --all        every session msesh built\n' >&2 ;;
+    restore) printf '  msesh restore NAME --resume   reopen the conversations too\n' >&2 ;;
+  esac
+  exit 2
+}
 
 # The same question asked about a whole list at once. 'list' used to call
 # session_exists per name, which is one tmux process each — sixteen of them on
@@ -1793,6 +1848,26 @@ list_sessions() {
   "$TMUX_BIN" list-sessions 2>/dev/null || { echo "msesh: no tmux server running"; return 0; }
 }
 
+# Which verbs may not guess. Acting on "whatever the default name happens to
+# be" is how 'msesh restore' brought back a session called msesh instead of
+# saying it had not been told what to restore — the constant default meant
+# there was always something to act on, so a missing argument never looked
+# like one. Building may still guess, because building invents a session
+# rather than finding one; it takes the directory's name and says so.
+if [ "$SESSION_SET" = 0 ]; then
+  case $ACTION in
+    kill|status|snapshot|forget|send) name_required "$ACTION" ;;
+    build)
+      if   [ "$RESTORE" = 1 ];     then name_required restore
+      elif [ "$ATTACH_ONLY" = 1 ]; then name_required attach
+      else
+        SESSION=$(session_name_from_dir)
+        [ "$DRY_RUN" = 1 ] || [ "$ADD" = 1 ] ||
+          echo "msesh: no -s given, so naming it '$SESSION' after this directory"
+      fi ;;
+  esac
+fi
+
 case $ACTION in
   list)
     echo "live:"
@@ -1842,11 +1917,35 @@ case $ACTION in
     # The arguments are joined rather than sent one per pane: 'msesh send work
     # /clear' and 'msesh send work "look at src/"' should both mean one line
     # typed, and quoting a sentence is something people forget.
+    # A bare word between session and text is a target only if it names a pane
+    # here; otherwise it was the first word of the message.
+    if [ -n "$SEND_TARGET_MAYBE" ]; then
+      if "$TMUX_BIN" list-panes -s -t "=$SESSION" -F '#{@label}' 2>/dev/null |
+           grep -qx -- "$SEND_TARGET_MAYBE"; then
+        SEND_TARGET=$SEND_TARGET_MAYBE
+        SEND_TEXT=("${ARGS[@]:2}")
+      fi
+    fi
+    [ "$SEND_ALL" != 1 ] || SEND_TARGET=all
+    [ "${#SEND_TEXT[@]}" -gt 0 ] ||
+      die "send needs something to type: msesh send $SESSION ${SEND_TARGET:-2} \"hello\""
+
     text=${SEND_TEXT[*]}
     targets=(); skipped=0; unstarted=0; unstarted_labels=()
-    while IFS='|' read -r pid pagent plabel pcmd; do
+    while IFS='|' read -r pid pagent plabel pcmd pidx; do
       [ -n "$pid" ] || continue
-      if [ "$SEND_ALL" != 1 ] && [ -z "$pagent" ]; then
+      # Naming a pane means it: a shell is a perfectly good thing to type into,
+      # and second-guessing an explicit target is how a tool stops being
+      # useful. Only the unaddressed case picks for you, and it picks agents.
+      if [ -n "$SEND_TARGET" ]; then
+        case $SEND_TARGET in
+          all) : ;;
+          *)   [ "$pidx" = "$SEND_TARGET" ] || [ "$plabel" = "$SEND_TARGET" ] || continue ;;
+        esac
+        targets+=("$pid|${plabel:-$pidx}")
+        continue
+      fi
+      if [ -z "$pagent" ]; then
         skipped=$((skipped + 1)); continue
       fi
       # A lazy pane has the agent's command *typed* and not run, so its
@@ -1855,21 +1954,33 @@ case $ACTION in
       # pane worse off than before, which msesh then reported as a success.
       # An agent that is actually running is the foreground process, so the
       # shell is the tell.
-      if [ "$SEND_ALL" != 1 ] && [ -n "$pagent" ] &&
-         printf '%s\n' $(plat_shell_commands) | grep -qx -- "$pcmd"; then
-        unstarted=$((unstarted + 1)); unstarted_labels+=("${plabel:-$pid}"); continue
+      if printf '%s\n' $(plat_shell_commands) | grep -qx -- "$pcmd"; then
+        unstarted=$((unstarted + 1)); unstarted_labels+=("${plabel:-$pidx}"); continue
       fi
       targets+=("$pid|$plabel")
     done < <("$TMUX_BIN" list-panes -s -t "=$SESSION" \
-      -F '#{pane_id}|#{@agent}|#{@label}|#{pane_current_command}' 2>/dev/null)
+      -F '#{pane_id}|#{@agent}|#{@label}|#{pane_current_command}|#{pane_index}' 2>/dev/null)
 
     if [ "${#targets[@]}" = 0 ]; then
+      if [ -n "$SEND_TARGET" ]; then
+        printf "msesh: '%s' has no pane %s. Its panes are:\n" "$SESSION" "$SEND_TARGET" >&2
+        # >&2 before 2>/dev/null: the other order points stdout at a stderr
+        # that has already been sent to /dev/null, and the list vanishes.
+        "$TMUX_BIN" list-panes -s -t "=$SESSION" \
+          -F '  #{pane_index}  #{@label}  (#{pane_current_command})' >&2 2>/dev/null
+        printf '\n  msesh send %s NUMBER|LABEL|all "text"\n' "$SESSION" >&2
+        exit 2
+      fi
       [ "$skipped" = 0 ] && [ "$unstarted" = 0 ] && die "no panes in '$SESSION'"
       if [ "$unstarted" != 0 ]; then
         ul=$(printf '%s, ' "${unstarted_labels[@]}"); ul=${ul%, }
-        die "no started agent in '$SESSION' — $unstarted pane(s) still have the command typed and not run ($ul); press Enter there, or '--all' to type into the shell anyway"
+        printf "msesh: nothing in '%s' is running an agent yet — %s still have the command typed and not run (%s).\n" \
+          "$SESSION" "$unstarted" "$ul" >&2
+        printf '  press Enter in the pane to start it, or name the pane to type at its shell anyway:\n' >&2
+        printf '    msesh send %s 1 "%s"\n' "$SESSION" "$text" >&2
+        exit 2
       fi
-      die "no agent panes in '$SESSION' — $skipped pane(s) skipped ('--all' to type into every one)"
+      die "no agent panes in '$SESSION' — name a pane to type into one: msesh send $SESSION 1 \"$text\""
     fi
 
     for t in "${targets[@]}"; do
