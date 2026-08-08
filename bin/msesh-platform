@@ -51,6 +51,13 @@ plat_os() {
   printf '%s' "$MSESH_OS"
 }
 
+# Answer it once, here, in the shell that sourced this file. The caching above
+# only works for a caller that runs plat_os directly — and nobody does: every
+# call site is "$(plat_os)", a subshell, whose export dies with it. So the
+# detection ran again for each one, spending a uname and a grep of /proc/version
+# every time to re-learn the same answer.
+plat_os >/dev/null 2>&1 || true
+
 plat_is_windows() { case $(plat_os) in windows|wsl) return 0 ;; esac; return 1; }
 
 # --- tmux ---------------------------------------------------------------------
@@ -103,6 +110,22 @@ plat_wsl_ready() {
 # someone to install what they already have is how diagnostics lose trust.
 plat_wsl_usable() {
   command -v wsl.exe >/dev/null 2>&1 || return 1
+
+  # Remember a yes for an hour. Starting a distro to ask it the same question
+  # costs ~135ms, and this runs before every command that has to hand over —
+  # on 'msesh list' that was most of the wait. Only the yes is cached: a no is
+  # asked again every time, so installing tmux or the agent in WSL takes effect
+  # at once rather than whenever a timer happens to expire. Wrong in the
+  # cheap direction only.
+  local cache=${TMPDIR:-/tmp}/msesh-wsl-ready.$(id -u 2>/dev/null || echo 0)
+  if [ -f "$cache" ]; then
+    local age now mtime
+    now=$(date +%s 2>/dev/null || echo 0)
+    mtime=$(date -r "$cache" +%s 2>/dev/null || echo 0)
+    age=$(( now - mtime ))
+    [ "$age" -ge 0 ] && [ "$age" -lt 3600 ] && return 0
+    rm -f "$cache" 2>/dev/null || true
+  fi
   local agent=${MSESH_AGENT_BIN:-claude}
   MSESH_WSL_AGENT=$agent wsl.exe -e bash -lc '
       command -v tmux >/dev/null 2>&1 || exit 1
@@ -110,7 +133,9 @@ plat_wsl_usable() {
       # A native install lands in ~/.local/bin, which root'"'"'s profile does not
       # add to PATH — look before concluding the agent is missing.
       [ -x "$HOME/.local/bin/$MSESH_WSL_AGENT" ] && exit 0
-      exit 1' >/dev/null 2>&1
+      exit 1' >/dev/null 2>&1 || return 1
+  : > "$cache" 2>/dev/null || true
+  return 0
 }
 
 plat_bootstrap() {

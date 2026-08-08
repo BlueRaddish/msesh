@@ -20,6 +20,43 @@ setlocal
 set "MSESH_SCRIPT=%~dp0msesh"
 set "MSESH_RUNNER="
 
+rem WSL first, when it can host a session, because going via MSYS2 only to hand
+rem over again costs a whole extra login shell - measured at ~230ms of a ~800ms
+rem command, spent starting an environment nothing then uses. MSESH_RUNTIME
+rem pins the old route.
+rem
+rem The arguments cross as real argv: `bash -lc 'exec "$@"' _ prog args...`
+rem hands them to bash as positional parameters rather than pasting them into a
+rem command string, so a quoted sentence - 'msesh send work "look at src/"' -
+rem survives without cmd's quoting rules getting a vote.
+if defined MSESH_RUNTIME goto :viamsys
+where wsl.exe >nul 2>&1 || goto :viamsys
+
+rem Translate the path here rather than asking wslpath: starting a distro to
+rem convert a string costs as much as the command being run. C:\x -> /mnt/c/x.
+set "MSESH_WSLPATH=%MSESH_SCRIPT:\=/%"
+set "MSESH_DRV=%MSESH_WSLPATH:~0,1%"
+set "MSESH_REST=%MSESH_WSLPATH:~2%"
+for %%D in (a b c d e f g h i j k l m n o p q r s t u v w x y z) do (
+    if /i "%MSESH_DRV%"=="%%D" set "MSESH_DRV=%%D"
+)
+set "MSESH_WSLPATH=/mnt/%MSESH_DRV%%MSESH_REST%"
+
+rem Ask once whether WSL can host a session, then remember. The probe is
+rem another distro start, and paying it before every command to re-learn an
+rem answer that changes when you install something is the wrong trade. Delete
+rem the marker to ask again.
+set "MSESH_WSLOK=%TEMP%\msesh-wsl-ok"
+if exist "%MSESH_WSLOK%" goto :runwsl
+wsl.exe -e bash -lc "command -v tmux >/dev/null 2>&1" >nul 2>&1 || goto :viamsys
+break > "%MSESH_WSLOK%"
+
+:runwsl
+wsl.exe -e bash -lc "exec \"$@\"" _ "%MSESH_WSLPATH%" %*
+exit /b %ERRORLEVEL%
+
+:viamsys
+
 if defined MSESH_BASH if exist "%MSESH_BASH%" set "MSESH_RUNNER=%MSESH_BASH%"
 if not defined MSESH_RUNNER if defined MSESH_MSYS_ROOT if exist "%MSESH_MSYS_ROOT%\usr\bin\bash.exe" set "MSESH_RUNNER=%MSESH_MSYS_ROOT%\usr\bin\bash.exe"
 if not defined MSESH_RUNNER if exist "%SystemDrive%\msys64\usr\bin\bash.exe" set "MSESH_RUNNER=%SystemDrive%\msys64\usr\bin\bash.exe"

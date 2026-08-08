@@ -1144,6 +1144,26 @@ TMUX_BIN=$(plat_tmux)
 
 session_exists() { "$TMUX_BIN" has-session -t "=$1" 2>/dev/null; }
 
+# The same question asked about a whole list at once. 'list' used to call
+# session_exists per name, which is one tmux process each — sixteen of them on
+# a machine with a few layouts, at ~30ms a spawn, for an answer one call could
+# have given. The names are cached on first use because nothing can start a
+# session in the middle of printing a list.
+_LIVE_SESSIONS=
+_live_loaded=0
+session_is_live() {
+  if [ "$_live_loaded" = 0 ]; then
+    _LIVE_SESSIONS=$("$TMUX_BIN" list-sessions -F '#{session_name}' 2>/dev/null || true)
+    _live_loaded=1
+  fi
+  case "
+$_LIVE_SESSIONS
+" in *"
+$1
+"*) return 0 ;; esac
+  return 1
+}
+
 # --- presets ----------------------------------------------------------------
 # Built-ins first, then the user file overrides by name. `claude` expands the
 # `cly` alias by hand: that alias lives in ~/.bashrc and bash only expands
@@ -1168,6 +1188,7 @@ preset_set() {
 
 preset_get() {
   local i
+  presets_probe                 # first read is what pays for the probing
   for i in "${!PRESET_NAMES[@]}"; do
     if [ "${PRESET_NAMES[$i]}" = "$1" ]; then printf '%s' "${PRESET_CMDS[$i]}"; return 0; fi
   done
@@ -1197,26 +1218,35 @@ fi
 # yours to add, either in presets.conf or through CLAUDE_FLAGS.
 preset_set shell "$PANE_SHELL -i"
 
-# The shells this machine actually has; a preset list offering cmd.exe on Linux
-# is lying about the machine.
-while IFS== read -r _pname _pcmd; do
-  [ -n "$_pname" ] && preset_set "$_pname" "$_pcmd"
-done <<EOF
+# Which shells and agents this machine actually has — a preset list offering
+# cmd.exe on Linux is lying about the machine.
+#
+# Deferred, because finding out is expensive and most commands never ask. Each
+# probe is a PATH walk, and a *miss* walks all of it; under WSL that PATH
+# carries every Windows directory, so one miss costs ~50ms over 9P and eight of
+# them cost 400 — which 'msesh list' was paying to learn about agents it had no
+# intention of mentioning. Built on first use instead, which for list, kill,
+# status, version and help is never.
+_presets_probed=0
+presets_probe() {
+  [ "$_presets_probed" = 0 ] || return 0
+  _presets_probed=1
+  local _pname _pcmd _a
+  while IFS== read -r _pname _pcmd; do
+    [ -n "$_pname" ] && preset_set "$_pname" "$_pcmd"
+  done <<EOF
 $(plat_shell_presets)
 EOF
-unset _pname _pcmd
-
-# Agents, from the same table that knows how to spell their effort flags —
-# rather than a second hand-written list that could disagree with it. Only the
-# ones installed here, on the same reasoning as the shells.
-for _a in ${AGENT_NAMES[@]+"${AGENT_NAMES[@]}"}; do
-  if [ "$_a" = claude ] && [ -n "${CLAUDE_BIN:-}" ] && [ -x "$CLAUDE_BIN" ]; then
-    preset_set claude "$CLAUDE_BIN${CLAUDE_FLAGS:+ $CLAUDE_FLAGS}"
-  elif command -v "$_a" >/dev/null 2>&1; then
-    preset_set "$_a" "$_a"
-  fi
-done
-unset _a
+  # Agents, from the same table that knows how to spell their effort flags —
+  # rather than a second hand-written list that could disagree with it.
+  for _a in ${AGENT_NAMES[@]+"${AGENT_NAMES[@]}"}; do
+    if [ "$_a" = claude ] && [ -n "${CLAUDE_BIN:-}" ] && [ -x "$CLAUDE_BIN" ]; then
+      preset_set claude "$CLAUDE_BIN${CLAUDE_FLAGS:+ $CLAUDE_FLAGS}"
+    elif command -v "$_a" >/dev/null 2>&1; then
+      preset_set "$_a" "$_a"
+    fi
+  done
+}
 
 PRESET_FILE=${MSESH_PRESETS:-$(plat_config_home)/presets.conf}
 if [ -r "$PRESET_FILE" ]; then
@@ -1476,7 +1506,13 @@ layout_migrate() {
   [ -d "$MANIFEST_DIR" ] || return 0
   for f in "$MANIFEST_DIR"/*.conf; do
     [ -e "$f" ] || continue
-    head -n 1 "$f" 2>/dev/null | grep -q '^# msesh layout ' || continue
+    # Read the first line in the shell rather than spawning head and grep for
+    # it. This runs on *every* invocation, once per recorded session, so on a
+    # machine with a dozen of them it was two dozen processes before msesh had
+    # done anything — and it is looking for a header written by a version from
+    # 0.2 to 0.4, which almost no file will ever have.
+    IFS= read -r _first < "$f" 2>/dev/null || continue
+    case $_first in '# msesh layout '*) ;; *) continue ;; esac
     n=${f##*/}; n=${n%.conf}
     layout_exists "$n" && continue
     mkdir -p "$LAYOUT_DIR" || return 0
@@ -1769,7 +1805,7 @@ case $ACTION in
     found=0
     while IFS= read -r n; do
       found=1
-      if session_exists "$n"; then printf '  %-16s up\n' "$n"
+      if session_is_live "$n"; then printf '  %-16s up\n' "$n"
       else                         printf '  %s\n'       "$n"; fi
     done < <(layout_names)
     [ "$found" = 1 ] || echo "  (none yet — 'msesh layout make NAME 4 claude -e ladder')"
@@ -1777,7 +1813,7 @@ case $ACTION in
     found=0
     while IFS= read -r n; do
       found=1
-      if session_exists "$n"; then printf '  %-16s up\n' "$n"
+      if session_is_live "$n"; then printf '  %-16s up\n' "$n"
       else                         printf '  %-16s down\n' "$n"; fi
     done < <(manifest_names)
     [ "$found" = 1 ] || echo "  (none yet)"
@@ -1788,12 +1824,12 @@ case $ACTION in
     # is worse than no completion at all.
     case ${ARGS[0]:-commands} in
       commands) printf '%s\n' $COMMANDS ;;
-      presets)  printf '%s\n' ${PRESET_NAMES[@]+"${PRESET_NAMES[@]}"} ;;
+      presets)  presets_probe; printf '%s\n' ${PRESET_NAMES[@]+"${PRESET_NAMES[@]}"} ;;
       layouts)  layout_names 2>/dev/null ;;
       manifests) manifest_names 2>/dev/null ;;
       sessions) "$TMUX_BIN" list-sessions -F '#S' 2>/dev/null ;;
       # What 'build' can take: a layout, a preset, or a session to attach to.
-      buildable) { layout_names; printf '%s\n' ${PRESET_NAMES[@]+"${PRESET_NAMES[@]}"}
+      buildable) presets_probe; { layout_names; printf '%s\n' ${PRESET_NAMES[@]+"${PRESET_NAMES[@]}"}
                    "$TMUX_BIN" list-sessions -F '#S' 2>/dev/null; } 2>/dev/null | sort -u ;;
       restorable) { layout_names; manifest_names; } 2>/dev/null | sort -u ;;
       topics)   printf '%s
@@ -2250,6 +2286,7 @@ PY
     # them means everything about presets is behind one thing to remember.
     case $PRESET_SUB in
       list|ls)
+        presets_probe
         echo "presets (built-in, then ${PRESET_FILE}):"
         for i in "${!PRESET_NAMES[@]}"; do
           printf '  %-10s %s\n' "${PRESET_NAMES[$i]}" "${PRESET_CMDS[$i]}"
