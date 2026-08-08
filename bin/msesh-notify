@@ -110,7 +110,7 @@ fi
 # Clears this pane, and the window's alert with it once no pane still wants
 # anything, so switching windows is no longer the only thing that calms a
 # session down.
-if [ "${1:-}" = "--resumed" ]; then
+if [ "${1:-}" = "--resumed" ] || [ "${1:-}" = "--seen" ]; then
   pane=${2:-${TMUX_PANE:-}}
   [ -n "$pane" ] || exit 0
   [ -x "$TMUX_BIN" ] || command -v "$TMUX_BIN" >/dev/null 2>&1 || exit 0
@@ -309,9 +309,19 @@ for row in ${rows[@]+"${rows[@]}"}; do
   #
   # Left dim on purpose even when a toast follows: the toast is the interrupt,
   # the colour is just the map back to the window.
+  # flags is silence|activity|bell. A bell is a program asking for you and gets
+  # the full treatment. Silence is not a request at all — it is the absence of
+  # one — so it dims the window and stops there. Never a toast: being
+  # interrupted to be told that nothing happened is the definition of noise,
+  # and it is what made these alerts worth ignoring.
   case $flags in
-    *1)  [ -n "$alerted" ] || highlight_on "$sess:$widx" ;;   # bell: something asked
-    *)   idle_on "$sess:$widx" ;;                             # silence: just quiet
+    ??1) [ -n "$alerted" ] || highlight_on "$sess:$widx" ;;
+    *)   # Dim only when nothing in the window is actually waiting on you.
+         # Otherwise the quiet-looking grey would paint over the red that says
+         # a pane is blocked — and a window is silent precisely while it waits
+         # for an answer, so the two coincide exactly when it matters most.
+         [ -n "$alerted" ] || idle_on "$sess:$widx"
+         continue ;;
   esac
 
   [ -n "$notified" ] && continue          # already toasted this alert
