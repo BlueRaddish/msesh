@@ -104,6 +104,53 @@ fi
 # failure here is silent and successful: this runs in the agent's process tree,
 # and a notifier that prints an error into someone's session is worse than one
 # that quietly does nothing.
+# --agent-notify: an agent that reports through one command rather than a hook
+# per event. codex is the case that exists: its `notify` config names a program
+# and hands it one JSON argument. Established by capture, not documentation —
+# the published config reference names the key and not a single event.
+#
+#   {"type":"agent-turn-complete","thread-id":"…","turn-id":"…","cwd":"…",
+#    "client":"codex_exec","input-messages":[…],"last-assistant-message":"…"}
+#
+# agent-turn-complete is the only type the shipped binary can emit: there is no
+# agent-needs-approval or equivalent anywhere in it. So codex can say it has
+# finished and never that it is blocked on you, and this maps the one signal
+# that exists onto @turn=waiting. If a later codex grows an approval event,
+# add it here and map it to input — the states already exist.
+if [ "${1:-}" = "--agent-notify" ]; then
+  payload=${2:-}
+  [ -n "$payload" ] || payload=$(cat 2>/dev/null || true)
+  [ -n "$payload" ] || exit 0
+
+  case $payload in
+    *'"type":"agent-turn-complete"'*|*'"type": "agent-turn-complete"'*) ;;
+    *) exit 0 ;;                      # a type msesh has no meaning for
+  esac
+
+  # The pane comes from the environment, the way it does for every hook: the
+  # agent runs in the pane, so its children inherit TMUX_PANE. A Windows agent
+  # launched from a WSL pane needs WSLENV to carry it across, which is why
+  # msesh sets that when it starts one.
+  pane=${3:-${TMUX_PANE:-}}
+  [ -n "$pane" ] || exit 0
+  [ -x "$TMUX_BIN" ] || command -v "$TMUX_BIN" >/dev/null 2>&1 || exit 0
+
+  info=$("$TMUX_BIN" display-message -t "$pane" -p \
+    '#{session_name}|#{window_index}|#{@label}|#{@msesh}' 2>/dev/null) || exit 0
+  IFS='|' read -r sess widx label stamp <<< "$info"
+  [ "$stamp" = 1 ] || exit 0
+
+  "$TMUX_BIN" set-option -p -t "$pane" @turn waiting 2>/dev/null
+  "$TMUX_BIN" set-window-option -t "$sess:$widx" monitor-activity on 2>/dev/null
+  "$TMUX_BIN" set-window-option -t "$sess:$widx" @alert 1 2>/dev/null
+  "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified 1 2>/dev/null
+  "$TMUX_BIN" refresh-client -S 2>/dev/null
+
+  toast "msesh: ${label:-a pane} finished — $sess" \
+        "Window $widx is waiting on you."
+  exit 0
+fi
+
 # --resumed: you answered. The only reliable evidence that a mark has been
 # dealt with, because the terminal never tells tmux where you are looking —
 # so the mark is cleared by the thing you did, not by where you might be.

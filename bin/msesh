@@ -152,6 +152,12 @@ MSESH_FORMAT=2
 # set — a second account, a sandbox, a CI image — msesh would write a settings
 # file Claude Code never reads, report success, and have 'hooks status' agree,
 # while the turn-end signal simply never arrived.
+# codex keeps one config file and reports every event through a single command
+# named in it, rather than a hook per event. CODEX_HOME moves it, the same way
+# CLAUDE_CONFIG_DIR moves Claude's.
+CODEX_DIR=${CODEX_HOME:-$HOME/.codex}
+CODEX_CONFIG=${CODEX_CONFIG:-$CODEX_DIR/config.toml}
+
 CLAUDE_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
   CLAUDE_SETTINGS=${CLAUDE_SETTINGS:-$CLAUDE_CONFIG_DIR/settings.json}
@@ -2175,6 +2181,57 @@ if os.path.exists(path + '.msesh-backup'):
     print("msesh: previous settings kept at %s.msesh-backup" % path)
 PY
     rc=$?
+
+    # codex reports through one command for every event rather than a hook per
+    # event, and its config is TOML, so it is a second installer rather than a
+    # fourth entry in the list above. Only the one event exists — see
+    # msesh-notify's --agent-notify for what the shipped binary can actually
+    # emit — so a codex pane can say it has finished and never that it is
+    # blocked on you.
+    if [ -n "$py" ] && [ -d "$CODEX_DIR" ] || [ -f "$CODEX_CONFIG" ]; then
+      "$py" - "$CODEX_CONFIG" "$HOOKS_SUB" "$dry" "$NOTIFIER" <<'PY'
+import os, shutil, sys, re
+
+path, action, dry, notifier = sys.argv[1], sys.argv[2], sys.argv[3] == '1', sys.argv[4]
+MARK = '# msesh'                       # tags the line so remove takes its own
+line = 'notify = ["%s", "--agent-notify"]  %s\n' % (notifier.replace('\\', '\\\\'), MARK)
+
+try:
+    text = open(path, encoding='utf-8').read()
+except OSError:
+    text = ''
+
+existing = re.search(r'(?m)^\s*notify\s*=.*$', text)
+ours = existing and MARK in existing.group(0)
+
+if action in ('install', 'add'):
+    if existing and not ours:
+        print("msesh: codex already has its own notify= and msesh will not touch it")
+        sys.exit(0)
+    if ours and existing.group(0).strip() == line.strip():
+        sys.exit(0)                    # already exactly right
+    new = re.sub(r'(?m)^\s*notify\s*=.*$\n?', '', text) if existing else text
+    new = line + new
+    if dry:
+        print("msesh: would set codex notify in %s" % path); sys.exit(0)
+    if os.path.exists(path):
+        shutil.copy(path, path + '.msesh-backup')
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, 'w', encoding='utf-8').write(new)
+    print("msesh: codex will report the end of a turn (%s)" % path)
+elif action in ('remove', 'uninstall', 'rm'):
+    if not ours:
+        sys.exit(0)
+    if dry:
+        print("msesh: would remove codex notify from %s" % path); sys.exit(0)
+    shutil.copy(path, path + '.msesh-backup')
+    open(path, 'w', encoding='utf-8').write(re.sub(r'(?m)^\s*notify\s*=.*$\n?', '', text))
+    print("msesh: removed codex notify from %s" % path)
+else:
+    print("msesh: codex notify %s" % ("installed" if ours else "not installed"))
+PY
+    fi
+
     if [ "$HOOKS_SUB" = install ] && [ "$dry" = 0 ] && [ "$rc" = 0 ]; then
       echo "msesh: agent panes will now report the end of a turn immediately;"
       echo "msesh: the silence timer stays as the fallback for everything else"
@@ -3150,6 +3207,12 @@ else
   # possibly-Windows-side shell, and the helper can ask tmux which windows are
   # flagged once it is running MSYS2-side, where formats are safe.
   "$TMUX_BIN" set-option -t "$SESSION" @msesh 1 >/dev/null
+
+  # Anything a pane launches should be able to say which pane it came from.
+  # What that takes is a platform question; here it is only a list of pairs.
+  while read -r _k _v; do
+    [ -n "$_k" ] && "$TMUX_BIN" set-environment -t "$SESSION" "$_k" "$_v" 2>/dev/null
+  done < <(plat_pane_env_pairs)
 
   # Going to a pane clears its mark. Until now the only things that cleared one
   # were answering the agent and switching tmux windows — and a session that is

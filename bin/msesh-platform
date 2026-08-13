@@ -475,6 +475,27 @@ plat_notifier() {
 #
 # Here rather than in msesh because the tail of the list is platform-specific
 # and msesh may not name a platform binary.
+# Environment a session's panes need so that whatever they launch can find its
+# way back to the pane it came from. Prints "NAME VALUE" lines; nothing at all
+# on a platform that needs none.
+#
+# The case that exists: under WSL an agent may be a Windows binary reached
+# through interop, and a Windows process inherits nothing from the Linux
+# environment unless WSLENV names it — so an agent's notify program would have
+# no idea which pane it was speaking for. Verified both ways: without WSLENV a
+# Windows child sees no TMUX_PANE at all; with it, the pane id arrives intact.
+plat_pane_env_pairs() {
+  [ "$(plat_os)" = wsl ] || return 0
+  case ":${WSLENV:-}:" in
+    *:TMUX_PANE:*) printf 'WSLENV %s\n' "$WSLENV"; return 0 ;;   # already there
+  esac
+  # A WSLENV that already ends in ':' would otherwise give '::', which is an
+  # empty variable name in the middle of the list.
+  local w=${WSLENV:-}
+  w=${w%:}
+  printf 'WSLENV %s\n' "${w:+$w:}TMUX_PANE"
+}
+
 plat_shell_commands() {
   printf '%s\n' bash sh zsh fish dash ksh
   plat_is_windows && printf '%s\n' pwsh powershell cmd
