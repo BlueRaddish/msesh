@@ -343,7 +343,7 @@ COMMANDS
   Checking
     status [NAME]     what each pane is doing, and which is waiting
     doctor            check this machine
-    send NAME TEXT    type TEXT into every agent pane
+    send NAME [WHICH] TEXT  type into a pane, or every started agent
     hooks SUBCMD      the turn-end signal from an agent
 
   Run 'msesh help TOPIC' for detail on any of these.
@@ -351,7 +351,7 @@ COMMANDS
 OPTIONS
   The four you will type most; 'msesh help options' has the rest.
 
-  -s, --session NAME    name the session (default: msesh)
+  -s, --session NAME    name the session (default: this directory)
   -d, --dir DIR         working directory for every pane (default: \$PWD)
   -e, --effort LIST     effort for agent panes: 'ladder', or l,m,h,x in order
   -w, --width N         max panes per window before spilling (default: 4)
@@ -452,7 +452,7 @@ EXAMPLES
 
 OPTIONS
   Session
-    -s, --session NAME   name the session (default: msesh)
+    -s, --session NAME   name the session (default: this directory)
     -d, --dir DIR        working directory for every pane (default: \$PWD)
         --ephemeral      kill the session when the tab closes
         --no-tab         build the session without opening a terminal tab
