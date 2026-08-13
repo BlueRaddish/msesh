@@ -2062,7 +2062,17 @@ except ValueError as e:
 hooks = cfg.setdefault('hooks', {}) if isinstance(cfg.get('hooks', {}), dict) else {}
 
 def mine(h):
-    return isinstance(h, dict) and h.get('_msesh') == 1
+    if not isinstance(h, dict):
+        return False
+    if h.get('_msesh') == 1:
+        return True
+    # Untagged, but unmistakably ours: an entry naming this notifier that msesh
+    # did not write is one somebody hand-wrote, or an older msesh left behind.
+    # Treating it as a stranger meant remove refused to touch it and install
+    # added a second copy beside it — two hooks, two toasts per turn. Matching
+    # on the command as well makes install idempotent against both.
+    cmd = h.get('command') or ''
+    return 'msesh-notify' in cmd
 
 def scan(event):
     groups = hooks.get(event, [])
@@ -3064,8 +3074,13 @@ else
     # Two states, and the difference matters: INPUT means the agent is blocked
     # on you right now, WAITING means it finished and the next move is yours.
     # Only the first is urgent, so only the first is red.
+    # The label is stated white rather than left to inherit. Inheriting means
+    # it takes the border's colour, so when a window dims or reddens the names
+    # go with it — exactly when you most need to read which pane is which. A
+    # fixed white keeps the names legible and lets the colour carry only the
+    # one thing it is for: state.
     "$TMUX_BIN" set-window-option -t "$WIN" pane-border-format \
-      ' #{?#{==:#{@turn},input},#[fg=colour196#,bold]<< INPUT NEEDED >>#[default] ,#{?#{==:#{@turn},waiting},#[fg=colour214#,bold]<< done >>#[default] ,}}#{pane_index}: #{@label} ' >/dev/null
+      ' #{?#{==:#{@turn},input},#[fg=colour196#,bold]<< INPUT NEEDED >>#[default] ,#{?#{==:#{@turn},waiting},#[fg=colour214#,bold]<< done >>#[default] ,}}#[fg=colour255]#{pane_index}: #{@label}#[default] ' >/dev/null
     # The silence timer answers "has anything printed lately", which is not the
     # question. It exists because there was no way to know a turn had ended —
     # but where the turn-end hook is installed and every pane in this window is

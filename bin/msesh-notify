@@ -128,6 +128,10 @@ if [ "${1:-}" = "--resumed" ] || [ "${1:-}" = "--seen" ]; then
     "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified "" 2>/dev/null
     "$TMUX_BIN" set-window-option -u -t "$sess:$widx" pane-border-style 2>/dev/null
     "$TMUX_BIN" set-window-option -u -t "$sess:$widx" pane-active-border-style 2>/dev/null
+    # Off again with the mark: activity monitoring restarts the silence
+    # countdown on every byte, so a chatty window would never go quiet enough
+    # to dim. It is only wanted while there is a mark that needs clearing.
+    "$TMUX_BIN" set-window-option -t "$sess:$widx" monitor-activity off 2>/dev/null
   fi
   "$TMUX_BIN" refresh-client -S 2>/dev/null
   exit 0
@@ -162,6 +166,13 @@ if [ "${1:-}" = "--needs-input" ]; then
   [ "$stamp" = 1 ] || exit 0
 
   "$TMUX_BIN" set-option -p -t "$pane" @turn input 2>/dev/null
+  # Watch for output while the mark is up. Selecting a pane clears it, but a
+  # pane you are *already* in is never selected again, so that mark had no way
+  # to go. Anything the pane prints from here — including the echo of what you
+  # type into it — is evidence you are dealing with it, and fires the scan that
+  # clears it. Switched off again the moment it clears, because activity
+  # monitoring restarts the silence countdown and the two do not compose.
+  "$TMUX_BIN" set-window-option -t "$sess:$widx" monitor-activity on 2>/dev/null
   "$TMUX_BIN" set-window-option -t "$sess:$widx" @alert 1 2>/dev/null
   "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified 1 2>/dev/null
   "$TMUX_BIN" refresh-client -S 2>/dev/null
@@ -201,7 +212,10 @@ if [ "${1:-}" = "--turn-end" ]; then
   # — rather than a guess about where your eyes are.
 
   # Mark the window the way the silence path would, so the two agree about what
-  # a waiting window looks like.
+  # a waiting window looks like. Activity monitoring goes on with it, so that a
+  # mark on the pane you are already sitting in still has a way to clear — see
+  # the --needs-input path for why selecting cannot do it.
+  "$TMUX_BIN" set-window-option -t "$sess:$widx" monitor-activity on 2>/dev/null
   "$TMUX_BIN" set-window-option -t "$sess:$widx" @alert 1 2>/dev/null
   "$TMUX_BIN" set-window-option -t "$sess:$widx" pane-border-style "fg=colour196,bold" 2>/dev/null
   "$TMUX_BIN" set-window-option -t "$sess:$widx" pane-active-border-style "fg=colour196,bold" 2>/dev/null
@@ -286,6 +300,15 @@ for row in ${rows[@]+"${rows[@]}"}; do
   IFS='|' read -r sess widx wname flags stamp notified alerted <<< "$row"
   [ "$stamp" = 1 ] || continue
 
+  # Output while a mark is up means the pane is being used — most often the
+  # echo of what you are typing into it. That is the answer to "have you dealt
+  # with this" for the pane you were already sitting in, which selecting it
+  # cannot give because it is never selected again. Treated exactly like
+  # having looked at it.
+  case $flags in
+    ?1?) [ -n "$alerted" ] && flags=000 ;;
+  esac
+
   if [ "$flags" = "000" ]; then
     # Alert cleared (you looked at it) — re-arm so the next one toasts again.
     [ -n "$notified" ] &&
@@ -299,6 +322,9 @@ for row in ${rows[@]+"${rows[@]}"}; do
     while IFS= read -r _p; do
       [ -n "$_p" ] && "$TMUX_BIN" set-option -p -t "$_p" -u @turn 2>/dev/null
     done < <("$TMUX_BIN" list-panes -t "$sess:$widx" -F '#{pane_id}' 2>/dev/null)
+    # The watch goes off with the marks it existed to clear, or a busy window
+    # would keep resetting the silence countdown and never dim.
+    "$TMUX_BIN" set-window-option -t "$sess:$widx" monitor-activity off 2>/dev/null
     continue
   fi
 

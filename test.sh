@@ -307,6 +307,32 @@ fi
 # --dry-run — so this is a source check or it is nothing.
 # Matched on the format's own body rather than the words in the tag, so
 # rewording the tag does not fail the check and changing the mechanism does.
+# The version string and the newest tag must agree. Three releases shipped a
+# binary announcing 1.4.2 because the tag was cut and MSESH_VERSION was not,
+# and nothing anywhere noticed. Skipped, loudly, outside a git checkout —
+# "could not look" must not read as "looked and found nothing".
+ver=$(sed -n 's/^MSESH_VERSION=//p' "$SRC/msesh" | head -1)
+if ! command -v git >/dev/null 2>&1 || ! git -C "$SRC" rev-parse --git-dir >/dev/null 2>&1; then
+  port_skip "version string matches the newest tag" "no git here to ask"
+else
+  newest=$(git -C "$SRC" tag --sort=-v:refname 2>/dev/null | head -1 | sed 's/^v//')
+  if [ -z "$newest" ]; then
+    port_skip "version string matches the newest tag" "no tags yet"
+  elif [ "$ver" = "$newest" ]; then
+    port_ok "version string matches the newest tag"
+  else
+    # Ahead of the newest tag is the normal state mid-development; behind it
+    # means a release went out misdescribing itself.
+    first=$(printf '%s\n%s\n' "$ver" "$newest" | sort -V | head -1)
+    if [ "$first" = "$newest" ]; then
+      port_ok "version string matches the newest tag"
+    else
+      port_fail "version string matches the newest tag" \
+        "MSESH_VERSION=$ver is older than tag v$newest"
+    fi
+  fi
+fi
+
 fmt=$(grep -F '#{pane_index}: #{@label}' "$SRC/msesh" || true)
 case $fmt in
   *'?@alert'*) port_fail "the pane tag is per pane" \
