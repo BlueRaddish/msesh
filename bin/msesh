@@ -989,6 +989,8 @@ ENVIRONMENT
   MSESH_STATE           manifest directory
   MSESH_NOTIFIER        the toast helper             (default: msesh-notify)
   MSESH_HIGHLIGHT       0 to stop marking a waiting window
+  MSESH_TURN_END_TOAST  toast when a turn ends: auto, always, never (default: auto)
+  MSESH_STATUS          where tmux's status bar goes: top, bottom, off (default: top)
   MSESH_TERMINAL        the terminal to open a session in, before the search
   MSESH_NOTIFY_CMD      a command taking TITLE BODY, before the search
   MSESH_OS              override platform detection (linux/macos/windows/wsl)
