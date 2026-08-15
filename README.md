@@ -8,8 +8,10 @@ Runs on **Linux, macOS and Windows** — tested on all three in CI, including un
 $ msesh build 4                        # four shells, tiled, in a new tab
 $ msesh build 4 claude                 # four Claude panes instead
 $ msesh build 3 claude +pwsh -s work   # three Claude panes and a shell, named 'work'
-$ msesh build 3 claude -e ladder       # panes at low, medium and high effort
-$ msesh layout make quad 4 claude -e l,m,h,x   # name that whole session
+$ msesh build 2 claude 2 pwsh          # two of each — a count binds to the spec after it
+$ msesh build claude/low claude/high    # effort rides on the spec
+$ msesh build ladder                   # a shell and three rising-effort panes
+$ msesh layout make quad 4 claude/high  # name that whole session
 $ msesh build quad                     # ...and build it, whenever
 $ msesh attach work                    # later: back to 'work', rebuilt if it died
 ```
@@ -20,19 +22,23 @@ $ msesh attach work                    # later: back to 'work', rebuilt if it di
 
 **Recoverable.** Every build records a manifest, so a session survives a crash or a reboot too — `msesh restore work` rebuilds it exactly as it was. `msesh restore --all` restores every known session at once; point a logon task at it and your working set comes back with the machine.
 
-**Nameable, as a whole.** A preset names one pane; a *layout* names an entire session — how many panes, what each runs, where, at what effort. `msesh layout make quad 4 claude -e l,m,h,x` writes it and `msesh build quad` builds it, today and next month.
+**Nameable, as a whole.** A preset names one pane; a *layout* names an entire session — how many panes, what each runs, where, at what effort. `msesh layout make quad 4 claude/high` writes it and `msesh build quad` builds it, today and next month. One layout ships with msesh: `msesh build ladder` is a shell and three Claude panes at low, medium and high.
 
 **Sized.** Any pane count, not a fixed grid. Panes tile up to four per window, then spill into new tmux windows (`prefix+n` / `prefix+p` to move between them). `-w` changes the threshold, `-w 0` crams everything into one window.
 
-**Noisy, and specific about it.** Run `msesh hooks install` once and a Claude pane reports the end of its turn the moment it happens. Everything else — a build, a test run, a REPL — falls back to tmux's silence monitor: a pane that has printed nothing for a while has usually finished. Either way, because a toast is gone in seconds and does not say where to look, msesh marks the waiting window in three places that stay until you deal with them:
+**Quiet unless something actually wants you.** Run `msesh hooks install` once and agent panes report their own state instead of being guessed at. Three things can happen, and they are deliberately not equally loud:
 
-- **the tab** — the terminal tab title becomes `(!) msesh: work — window 2 waiting`, so an unfocused tab advertises itself
-- **the status bar** — the waiting window turns red, with a `!`
-- **the block itself** — every pane border in that window turns red and reads `<< WAITING >>`
+| what happened | what msesh does |
+| --- | --- |
+| a pane is **blocked on you** — a permission prompt, an idle prompt, an elicitation | a desktop toast; the pane tagged `<< INPUT NEEDED >>` in red; the window marked in the status bar; the terminal tab title changed to `(!) msesh: work — window 2 needs you` |
+| a pane **finished its turn** | the pane tagged `<< done >>`. Nothing else — no toast, no red, no tab title |
+| a window has **gone quiet** | its borders dim and its status entry greys with a `~`. Nothing else |
 
-All three clear the moment you switch to that window. tmux only alerts on windows you are *not* looking at, so the window on screen never nags. `--notify` tunes the threshold, `--no-notify` turns it off, `MSESH_HIGHLIGHT=0` keeps the toast but drops the three markers.
+Only the first one interrupts, because only the first one cannot proceed without you. An alert that fires when nothing is wanted is an alert you stop reading — and then the one that matters goes unread with it. `MSESH_TURN_END_TOAST=always` brings back the toast on every finished turn; a session whose tab is closed toasts anyway, since there is no mark left to see.
 
-Alerts are raised per *window*, never per pane — a window counts as silent only once every pane in it is — so the window is what gets highlighted. Build with `-w 1` if you would rather have one pane per window, and therefore one alert per pane.
+Marks clear when you deal with them: selecting the pane clears it, and so does answering the agent. `--notify` tunes the silence threshold, `--no-notify` turns it off, `MSESH_HIGHLIGHT=0` drops the on-screen marks and keeps the toast.
+
+The pane tag is per pane, so in a four-pane window you can see *which* pane wants you. tmux's own silence and bell alerts are per window — a window counts as silent only once every pane in it is — so those mark the window. Build with `-w 1` if you would rather have one pane per window.
 
 **Reachable from any shell.** `msesh` means the same thing typed into bash, zsh, fish, PowerShell, cmd, VS Code's terminal or the Windows Run box. Windows has no tmux of its own, so msesh hands itself over to a runtime that has one — WSL for preference, then MSYS2 or Cygwin.
 
@@ -127,19 +133,21 @@ The arguments to `build`, `rebuild` and `add`, read left to right:
 | `+PRESET` | one more pane (`+` is decoration) | `msesh build 3 claude +pwsh` |
 | `!COMMAND` | one pane running COMMAND literally | `msesh build 2 claude '!htop'` |
 
-With no spec you get one pane of the default preset, which is a plain shell — ask for agents by name. `MSESH_DEFAULT_PRESET` changes that if you would rather `msesh build 4` meant four Claude panes. Specs and options interleave freely, so `msesh build 4 claude -e ladder` and `msesh build -e ladder 4 claude` are the same command.
+With no spec you get one pane of the default preset, which is a plain shell — ask for agents by name. `MSESH_DEFAULT_PRESET` changes that if you would rather `msesh build 4` meant four Claude panes. Specs and options interleave freely, so `msesh build 4 claude -w 2` and `msesh build -w 2 4 claude` are the same command.
+
+A count binds to the spec that follows it, so counts and specs alternate as often as you like: `msesh build 2 claude 2 pwsh` is four panes, `msesh build 2 claude pwsh` is three.
 
 ## Presets
 
 Built in, in the order `msesh preset list` shows them: `shell` (your shell), then the shells this machine has (`bash`, `sh`, `zsh`, `fish`, `pwsh`, `cmd` — whichever exist), then the agents that are installed (`claude`, `codex`, `gemini`, `aider`). Agents come last because they are the specialised end of the list, not the front of it. Your own go in `~/.config/msesh/presets.conf` as `name = command` lines and override the built-ins by name — see [`presets.conf.example`](presets.conf.example), or run `msesh preset list` to see what is currently defined.
 
-A preset whose command runs a known **agent** — `claude`, `codex`, whatever else you have registered — is treated as an agent pane: it gets that agent's effort flag injected when you pass `-e`, and it is what `--lazy` leaves pre-typed instead of started. See [Agents](#agents).
+A preset whose command runs a known **agent** — `claude`, `codex`, whatever else you have registered — is treated as an agent pane: it can take an effort on the spec, and it is what `--lazy` leaves pre-typed instead of started. See [Agents](#agents).
 
 You do not have to edit the file yourself. `msesh preset make` writes it:
 
 ```console
-$ msesh preset make review "claude --remote-control /code-review"
-msesh: preset 'review' = claude --remote-control /code-review
+$ msesh preset make review "claude /code-review"
+msesh: preset 'review' = claude /code-review
 ```
 
 Leave anything out and it asks instead:
@@ -168,12 +176,12 @@ Answer a pane with a preset name, or with a `"quoted command"` to run that comma
 
 ## Layouts
 
-A preset is a name for one pane. A **layout** is a name for a whole session: the pane list, the working directory, the effort ladder, how far panes spill into new windows, how long silence means waiting.
+A preset is a name for one pane. A **layout** is a name for a whole session: the pane list, the working directory, how far panes spill into new windows, how long silence means waiting.
 
 Write one with the same words you would have typed to build it:
 
 ```console
-$ msesh layout make quad 4 claude -e l,m,h,x
+$ msesh layout make quad 4 claude/xhigh
 msesh: layout 'quad' — 4 claude in /c/Users/me
 msesh: launch it with 'msesh build quad'
 
@@ -184,7 +192,7 @@ Then build it, as often as you like:
 
 ```console
 $ msesh build quad          # four Claude panes at low, medium, high and xhigh
-$ msesh build quad -e x     # the same session, one option overridden
+$ msesh build quad -w 2     # the same session, one option overridden
 $ msesh build quad -s spike # the same session under another name
 ```
 
@@ -207,7 +215,7 @@ A layout is a session, so it is used on its own: `msesh build quad +pwsh` and `m
 
 ## Agents
 
-Two of msesh's behaviours are about a pane holding an interactive coding agent rather than a shell: `-e` injects a reasoning-effort flag, and `--lazy` pre-types the pane instead of running it. Neither is about Claude in particular, so what msesh knows about any given agent is one row of a table:
+Two of msesh's behaviours are about a pane holding an interactive coding agent rather than a shell: a spec's `/effort` suffix injects a reasoning-effort flag, and `--lazy` pre-types the pane instead of running it. Neither is about Claude in particular, so what msesh knows about any given agent is one row of a table:
 
 | Agent | Effort flag | Levels |
 |---|---|---|
@@ -218,11 +226,11 @@ Two of msesh's behaviours are about a pane holding an interactive coding agent r
 
 Panes are matched on the command they run, so `review = claude ... /code-review` and `yolo = codex --full-auto` are recognised without being listed. `msesh help agents` prints the table as it currently stands.
 
-An agent with no effort flag is **left out of `-e`** rather than made an error, so a session mixing `gemini` with `claude` still takes a single `-e` and the levels land where they can be used. Asking for a level an agent does not have **is** an error, naming both:
+Effort is written on the spec that asks for the pane: `claude/high`, or `claude/h` for short. It used to be one `-e` list dealt across the session in pane order, which made the effort a pane ran at a fact about where it sat — adding a shell in the middle shifted everything after it, and an agent without that level shifted it again. Asking an agent for a level it does not have is an error naming the ones it does:
 
 ```console
-$ msesh build 2 codex -e x
-msesh: pane 1 runs codex, which has no 'xhigh' effort — it takes low, medium, high
+$ msesh build 2 codex/x
+msesh: codex has no 'xhigh' effort — it takes low, medium, high
 ```
 
 Teach msesh about another one in `~/.config/msesh/agents.conf`, as `name = flag | levels`, where the flag carries its own separator:
@@ -242,9 +250,8 @@ Genuinely Claude-specific behaviour stays under Claude-specific names: the `clau
 |---|---|
 | `-s NAME` | session name (default: `msesh`) |
 | `-d DIR` | working directory for every pane |
-| `-e LIST` | effort levels for agent panes, in pane order — `l`/`m`/`h`/`x`, or `ladder` for low,medium,high; the last repeats for panes left over |
 | `-w N` | max panes per window before spilling (default: 4, `0` for one window) |
-| `--lazy` | pre-type agent panes' commands without running them |
+| `--lazy` | pre-type agent panes' commands without running them (they start by default) |
 | `--windows LIST` | name the windows this build creates, in order — `repo,logs`; names run out silently |
 | `-n`, `--dry-run` | print the panes, commands and window split, then stop |
 | `--notify SECS` | toast after this much silence (default: 20, `0` = off) |
@@ -304,16 +311,16 @@ Only an agent that can be reopened *by id* takes part. `claude` can; `codex` res
 
 ## Checking before you build
 
-`--dry-run` resolves the whole command — specs, presets, the agent table, effort assignment, the window split — and prints it instead of building it. Nothing starts, no manifest is written.
+`--dry-run` resolves the whole command — specs, presets, the agent table, effort, the window split — and prints it instead of building it. Nothing starts, no manifest is written.
 
 ```console
 $ msesh build quad -n
 msesh: would build 'quad' — 4 pane(s) in /c/Users/me
   window m1
-    claude/low             claude --remote-control --effort low
-    claude/medium          claude --remote-control --effort medium
-    claude/high            claude --remote-control --effort high
-    claude/xhigh           claude --remote-control --effort xhigh
+    claude/low             claude --effort low
+    claude/medium          claude --effort medium
+    claude/high            claude --effort high
+    claude/xhigh           claude --effort xhigh
   1 window(s), 4 pane(s) per window, toast after 20s of silence
 msesh: nothing was built (--dry-run)
 ```
@@ -358,7 +365,7 @@ Both ask `msesh complete-names KIND`, which prints one name per line and nothing
 
 ## Tests
 
-`./test.sh` — 173 checks over spec resolution, effort against the agent table, layout resolution, the preset file rewrite, the manifest round-trip, the portability invariants, and whether the help still describes the tool. Everything goes through `--dry-run`, so no tmux session is ever built. `-v` lists each check.
+`./test.sh` — 220 checks over spec resolution, effort against the agent table, layout resolution, session naming, the preset file rewrite, the manifest round-trip, the portability invariants, and whether the help still describes the tool. Almost all of it goes through `--dry-run`; the one exception is the session-naming block, which starts a bare tmux session to check that a second unnamed build is numbered rather than joined, and kills it again. `-v` lists each check.
 
 The run is dominated by process startup, so it is quick on Linux and macOS and slow where spawning is expensive — on Windows under MSYS2, expect around four minutes rather than the couple of seconds it takes elsewhere.
 
@@ -387,6 +394,8 @@ Everything machine-specific is an environment variable, so msesh should work on 
 | `WT_BIN`, `WT_PROFILE` | Windows: Terminal binary and the profile a tab uses |
 | `CLAUDE_SETTINGS` | Claude Code's settings.json, for `msesh hooks` |
 | `MSESH_HIGHLIGHT` | `0` to stop marking a waiting window in the tab title, status bar and pane borders |
+| `MSESH_TURN_END_TOAST` | `auto` (default — toast only when the tab is closed), `always`, `never` |
+| `MSESH_STATUS` | where tmux's status bar goes: `top` (default), `bottom`, `off` |
 
 `msesh help env` lists the lot.
 

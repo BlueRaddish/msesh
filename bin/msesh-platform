@@ -578,19 +578,27 @@ plat_checksum() {
 # drift apart.
 plat_path_check() {                     # plat_path_check DIR -> ok|fail|unknown
   local dir=$1
+  # This shell can already reach it. Checked first and on every platform: it is
+  # the cheapest answer and the only one that is never wrong. The registry
+  # lookup below answers a different, narrower question — whether PowerShell,
+  # cmd and the Run box can reach it too — and it is worth asking only when
+  # this one has said no. Under WSL it used to be asked *instead*, with a
+  # /mnt/c path that no registry entry could ever match, so a correctly
+  # installed msesh was reported as unreachable every time.
+  case ":$PATH:" in *":$dir:"*) printf 'ok'; return 0 ;; esac
   if plat_is_windows; then
     local reg user_path win
     reg=$(command -v reg.exe 2>/dev/null || true)
-    [ -n "$reg" ] || reg=$(cygpath -u "${SYSTEMROOT:-C:\\Windows}" 2>/dev/null)/System32/reg.exe
+    [ -n "$reg" ] || reg=$(plat_native_path "${SYSTEMROOT:-C:\\Windows}" 2>/dev/null)/System32/reg.exe
     [ -x "$reg" ] || { printf 'unknown'; return 0; }
-    win=$(cygpath -w "$dir" 2>/dev/null || printf '%s' "$dir")
+    win=$(plat_windows_path "$dir" 2>/dev/null || printf '%s' "$dir")
     # //v, not /v: msys rewrites a lone /v into a path before reg.exe sees it.
     user_path=$( { "$reg" query "HKCU\\Environment" //v Path 2>/dev/null || true; } |
                  tr -d '\r' | sed -n 's/.*REG_[A-Z_]*Z[[:space:]]*//p')
     [ -n "$user_path" ] || { printf 'unknown'; return 0; }
     case $user_path in *"$win"*) printf 'ok' ;; *) printf 'fail' ;; esac
   else
-    case ":$PATH:" in *":$dir:"*) printf 'ok' ;; *) printf 'fail' ;; esac
+    printf 'fail'
   fi
 }
 
@@ -598,7 +606,7 @@ plat_path_hint() {
   local dir=$1
   if plat_is_windows; then
     local win
-    win=$(cygpath -w "$dir" 2>/dev/null || printf '%s' "$dir")
+    win=$(plat_windows_path "$dir" 2>/dev/null || printf '%s' "$dir")
     printf 'put it on the User PATH in the registry, not in a shell rc:\n'
     printf "    [Environment]::SetEnvironmentVariable('PATH',\n"
     printf "      [Environment]::GetEnvironmentVariable('PATH','User') + ';%s', 'User')\n" "$win"
@@ -613,19 +621,34 @@ plat_path_hint() {
 # Emitted as 'name=command' lines for the caller to register as presets. Same
 # conditional-registration idea as the agent table: a preset list that offers
 # cmd.exe on Linux is lying about the machine.
+#
+# Takes an optional name, and then answers about that one shell only. This is
+# not an optimisation of the loop — it is the difference between a probe that
+# finds something and one that does not. A `command -v` that MISSES walks the
+# whole PATH, and under WSL that PATH carries every Windows directory: one miss
+# measured 113 ms here against 0.4 ms for a hit. Asking the whole question to
+# answer 'is bash a preset' therefore cost a third of a second in misses about
+# shells nobody had mentioned. With a name, only the probes that could answer
+# it run — usually none at all.
 plat_shell_presets() {
-  printf 'bash=bash -i\n'
-  printf 'sh=bash -i\n'
-  command -v zsh  >/dev/null 2>&1 && printf 'zsh=zsh -i\n'
-  command -v fish >/dev/null 2>&1 && printf 'fish=fish -i\n'
+  local want=${1:-}
+  _psp() { case $want in ''|"$1") return 0 ;; *) return 1 ;; esac; }
+
+  _psp bash && printf 'bash=bash -i\n'
+  _psp sh   && printf 'sh=bash -i\n'
+  _psp zsh  && command -v zsh  >/dev/null 2>&1 && printf 'zsh=zsh -i\n'
+  _psp fish && command -v fish >/dev/null 2>&1 && printf 'fish=fish -i\n'
   if plat_is_windows; then
-    command -v powershell.exe >/dev/null 2>&1 && {
-      printf 'pwsh=powershell.exe -NoLogo\n'; printf 'ps=powershell.exe -NoLogo\n'; }
-    command -v pwsh.exe >/dev/null 2>&1 && printf 'pwsh7=pwsh.exe -NoLogo\n'
-    command -v cmd.exe >/dev/null 2>&1 && printf 'cmd=cmd.exe\n'
+    { _psp pwsh || _psp ps; } && command -v powershell.exe >/dev/null 2>&1 && {
+      _psp pwsh && printf 'pwsh=powershell.exe -NoLogo\n'
+      _psp ps   && printf 'ps=powershell.exe -NoLogo\n'; }
+    _psp pwsh7 && command -v pwsh.exe >/dev/null 2>&1 && printf 'pwsh7=pwsh.exe -NoLogo\n'
+    _psp cmd   && command -v cmd.exe  >/dev/null 2>&1 && printf 'cmd=cmd.exe\n'
   else
-    command -v pwsh >/dev/null 2>&1 && {
-      printf 'pwsh=pwsh -NoLogo\n'; printf 'ps=pwsh -NoLogo\n'; }
+    { _psp pwsh || _psp ps; } && command -v pwsh >/dev/null 2>&1 && {
+      _psp pwsh && printf 'pwsh=pwsh -NoLogo\n'
+      _psp ps   && printf 'ps=pwsh -NoLogo\n'; }
   fi
+  unset -f _psp
   return 0
 }

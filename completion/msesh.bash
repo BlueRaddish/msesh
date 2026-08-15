@@ -25,7 +25,7 @@ _msesh() {
     cmd=
     for (( i = 1; i < COMP_CWORD; i++ )); do
         case ${COMP_WORDS[i]} in
-            -s|-d|-e|-w|--session|--dir|--effort|--width|--notify|--windows)
+            -s|-d|-w|--session|--dir|--width|--notify|--windows)
                 (( i++ )); continue ;;
             -*) continue ;;
             *)  cmd=${COMP_WORDS[i]}; break ;;
@@ -36,8 +36,6 @@ _msesh() {
     case $prev in
         -d|--dir)
             COMPREPLY=( $(compgen -d -- "$cur") ); return ;;
-        -e|--effort)
-            COMPREPLY=( $(compgen -W "low medium high xhigh ladder l m h x" -- "$cur") ); return ;;
         -w|--width|--notify)
             return ;;                   # a number; nothing useful to offer
         -s|--session)
@@ -52,9 +50,9 @@ _msesh() {
     fi
 
     if [[ $cur == -* ]]; then
-        local opts="-s -d -e -w -n --session --dir --effort --width --windows
-                    --notify --no-notify --lazy --ephemeral --no-tab --no-trust
-                    --dry-run --all"
+        local opts="-s -d -w -n --session --dir --width --windows
+                    --notify --no-notify --lazy --eager --ephemeral --no-tab
+                    --no-trust --dry-run --all"
         [ "$cmd" = send ] && opts="$opts --no-enter"
         COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
         return

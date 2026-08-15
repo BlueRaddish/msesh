@@ -127,7 +127,7 @@ SESSION_SET=0
 # MSESH_DEFAULT_PRESET=claude restores the old behaviour for anyone who wants it.
 DEFAULT_PRESET=${MSESH_DEFAULT_PRESET:-shell}
 
-MSESH_VERSION=1.9.0
+MSESH_VERSION=1.10.0
 
 # The manifest and layout file format, which moves independently of the tool's
 # own version and only when the meaning of a key changes. Written into every
@@ -167,22 +167,22 @@ fi
 
 # --- agents ------------------------------------------------------------------
 # Some panes hold an interactive coding agent rather than a shell, and two of
-# msesh's behaviours are about that distinction: -e injects a reasoning-effort
-# flag, and --lazy pre-types the command instead of running it, because these
-# are the panes that are slow and expensive to start.
+# msesh's behaviours are about that distinction: a spec's /effort suffix injects
+# a reasoning-effort flag, and --lazy pre-types the command instead of running
+# it, because these are the panes that are slow and expensive to start.
 #
 # Neither behaviour is about Claude. This used to be one is_claude_cmd()
 # returning true or false, which meant 'agent' and 'claude' were the same idea
-# in the code and -e could only ever work for one vendor. The table below is
+# in the code and effort could only ever work for one vendor. The table below is
 # the whole of what msesh knows about any particular agent — its name, how it
 # spells its effort flag, and which levels it accepts — so teaching msesh about
 # another one is a line here, not a change to the logic.
 #
 # The flag carries its own separator: 'claude --effort high' takes a space,
 # 'codex -c model_reasoning_effort=high' takes none. An empty flag means the
-# agent has no effort setting, and its panes are then left out of -e entirely
-# rather than being an error — a mixed session should not have to explain
-# itself. Levels are listed low to high, and a level an agent does not have is
+# agent has no effort setting, and asking one of its panes for a level is then
+# an error naming the agent, rather than a flag silently going nowhere.
+# Levels are listed low to high, and a level an agent does not have is
 # an error naming both, because silently running at some other effort is worse
 # than not starting.
 AGENT_NAMES=()
@@ -266,6 +266,44 @@ agent_field() {                       # agent_field NAME effort|levels|resume
 
 is_claude_cmd() { [ "$(agent_of_cmd "$1" || true)" = claude ]; }
 
+# PRESET/EFFORT, resolved per pane. This is where reasoning effort is set now:
+# it used to be one -e list dealt across the whole session in pane order, which
+# made the effort a pane ran at a fact about where it sat rather than about
+# what it was for — 'ladder' meant exactly three panes, a shell in the middle
+# shifted everything after it, and an agent missing that level shifted it
+# again. A spec carries its own.
+#
+# Prints the command and the label suffix, tab separated. Only ever called for
+# a named preset, never for '!command' — a literal command is full of slashes
+# and none of them are efforts.
+spec_effort() {
+  local name=$1 want=$2 cmd=$3 agent flag levels
+  agent=$(agent_of_cmd "$cmd") ||
+    die "'$name' is not an agent, so it has no effort — drop the '/$want'"
+  flag=$(agent_field "$agent" effort)
+  [ -n "$flag" ] ||
+    die "$agent has no effort setting, so '$name/$want' cannot be built"
+  case $want in
+    l|lo) want=low ;; m|med) want=medium ;;
+    h|hi) want=high ;; x|xh) want=xhigh ;;
+  esac
+  levels=$(agent_field "$agent" levels)
+  case ",$levels," in
+    *",$want,"*) ;;
+    *) die "$agent has no '$want' effort — it takes ${levels//,/, }" ;;
+  esac
+  # Already spelled out by the preset itself — that is a deliberate choice and
+  # outranks the spec. Matched on the whole flag minus its trailing separator
+  # ('--effort', '-c model_reasoning_effort='), not on its first word, or
+  # codex's '-c' would match any -c the command already had.
+  # The trailing newline matters: the caller reads this with `read`, and a
+  # `read` that hits EOF without one returns non-zero — which under `set -e`
+  # ended the whole build, silently, with a zero exit status.
+  local flagtext=${flag%"${flag##*[![:space:]]}"}
+  case $cmd in *"$flagtext"*) printf '%s\t%s\n' "$cmd" ''; return 0 ;; esac
+  printf '%s\t%s\n' "$cmd $flag$want" "/$want"
+}
+
 # --- help --------------------------------------------------------------------
 # Written out rather than scraped from the header comment: the comment explains
 # the design to whoever is editing this file, which is not what someone typing
@@ -312,11 +350,15 @@ EXAMPLES
   Three claude panes and a shell, named 'work':
     \$ msesh build 3 claude +shell -s work
 
-  Panes at low, medium and high effort:
-    \$ msesh build 3 claude -e ladder
+  Two claude panes and two shells:
+    \$ msesh build 2 claude 2 shell
 
-  Name that whole session, then build it whenever:
-    \$ msesh layout make quad 4 claude -e l,m,h,x
+  Panes at low, medium and high effort — or the layout that ships with it:
+    \$ msesh build claude/low claude/medium claude/high
+    \$ msesh build ladder
+
+  Name a whole session, then build it whenever:
+    \$ msesh layout make quad 4 claude/high
     \$ msesh build quad
 
   See what a command would build, without building it:
@@ -351,9 +393,9 @@ COMMANDS
 OPTIONS
   The four you will type most; 'msesh help options' has the rest.
 
-  -s, --session NAME    name the session (default: this directory)
+  -s, --session NAME    name the session (default: this directory, numbered
+                        if one of that name is already up)
   -d, --dir DIR         working directory for every pane (default: \$PWD)
-  -e, --effort LIST     effort for agent panes: 'ladder', or l,m,h,x in order
   -w, --width N         max panes per window before spilling (default: 4)
   -n, --dry-run         print what would be built, build nothing
   -h, --help            show this help
@@ -403,25 +445,52 @@ EXAMPLES
   Three claude panes and one shell:
     \$ msesh build 3 claude +shell
 
+  Two of one and two of another — a count applies to the spec after it:
+    \$ msesh build 2 claude 2 shell
+
   Two claude panes and one running htop:
     \$ msesh build 2 claude '!htop'
 
   Two of one preset, one of another:
     \$ msesh build claude:2 pwsh:1
 
+  One claude pane per effort level:
+    \$ msesh build claude/low claude/medium claude/high
+
+  Four panes, all at high effort:
+    \$ msesh build 4 claude/high
+
 ARGUMENTS
-  N            N panes of the default preset
-  PRESET       one pane of PRESET
-  N PRESET     N panes of PRESET
-  PRESET:N     N panes of PRESET
-  +PRESET      one more pane; the + is decoration
-  !COMMAND     one pane running COMMAND as written
+  N              N panes of the default preset
+  PRESET         one pane of PRESET
+  N PRESET       N panes of PRESET
+  PRESET:N       N panes of PRESET
+  PRESET/EFFORT  one pane of PRESET at that reasoning effort
+  +PRESET        one more pane; the + is decoration
+  !COMMAND       one pane running COMMAND as written
+
+  A count binds to the spec that follows it, so counts and specs alternate
+  freely: '2 claude 2 shell' is four panes, '2 claude shell' is three.
+
+  EFFORT is low, medium, high or xhigh, and l/m/h/x are accepted for them.
+  Only an agent has one — 'shell/high' is an error, and so is a level the
+  agent in question does not have, named along with the ones it does. A
+  preset whose command already spells out an effort keeps it.
+
+  Counts and efforts combine in either order: 'claude/high:2' and '2
+  claude/high' both build two high-effort panes.
+
+  A name is never a number, so 'msesh build 3' is always three panes and
+  never a layout called '3'. Between a layout and a preset of the same name,
+  a bare 'msesh build NAME' is the layout; 'msesh build 1 NAME' is the preset.
 
   A spec that collides with a command name needs the verb to disambiguate:
   a preset called 'list' is 'msesh build list'.
 
 SEE ALSO
   msesh help preset     what a preset is, and how to add one
+  msesh help layout     naming a whole session, including 'ladder'
+  msesh help agents     which commands can take an effort
   msesh help options    every option a build takes
 EOF
 }
@@ -459,15 +528,17 @@ OPTIONS
     -n, --dry-run        print what would be built, build nothing
 
   Panes
-    -e, --effort LIST    effort for agent panes, in pane order
     -w, --width N        max panes per window before spilling (default: 4)
         --windows LIST   name the windows this build creates, in order
-        --lazy           pre-type agent panes without running them (default)
-        --eager          start agent panes straight away (--now is a synonym)
+        --lazy           pre-type agent panes without running them
+        --eager          start agent panes straight away (default; --now too)
 
   Notifications
         --notify SECS    toast after SECS of pane silence (default: 20, 0=off)
         --no-notify      same as --notify 0
+
+  Gone
+    -e, --effort LIST    moved onto the spec — 'msesh build claude/high'
 
   Other
         --all            restore or kill every known session, not just one
@@ -479,10 +550,15 @@ OPTIONS
 
   Four of those carry a rule with them.
 
-  With -e, the letters l/m/h/x expand to low/medium/high/xhigh and 'ladder'
-  means low,medium,high; the last level repeats for any panes left over. An
-  agent with no effort setting is skipped rather than given one, and a level
-  its agent does not have is an error naming both.
+  Reasoning effort is not an option any more: it belongs to the pane that
+  asked for it, so it is written on the spec — 'msesh build claude/high'.
+  'msesh help specs' has the rest, and 'msesh build ladder' is the
+  low/medium/high session that -e used to mean.
+
+  With -s NAME, a session already up by that name is attached to rather than
+  rebuilt. Without -s, the session is named after the directory, and a second
+  build in a directory whose session is already up gets 'name-2' instead of
+  joining the first.
 
   With -w 0, every pane goes in one window however small it gets.
 
@@ -496,16 +572,24 @@ OPTIONS
   report the end of a turn themselves; these options then govern only the
   panes that are not agents.
 
-  A toast is gone in seconds and does not say where to look, so the alert also
-  lands in three places that stay until you deal with them: the terminal tab
-  title, the window's entry in tmux's status bar, and every pane border in
-  that window. All three clear when you switch to it. tmux alerts per window,
-  never per pane, so the window is what gets marked — build with '-w 1' for an
-  alert per pane. MSESH_HIGHLIGHT=0 drops all three and keeps the toast.
+  Only one thing toasts: a pane blocked waiting for you. A turn that merely
+  ended tags its own pane '<< done >>' and says nothing out loud, and a window
+  that has gone quiet dims its borders and says nothing either. An alert that
+  fires when nothing is wanted is one you stop reading — and then the one that
+  matters goes unread with it. MSESH_TURN_END_TOAST=always brings the old
+  behaviour back, =never silences it even for a closed tab.
+
+  The marks that do not interrupt stay until you deal with them, in three
+  places: the terminal tab title, the window's entry in tmux's status bar, and
+  the pane's own border tag. Selecting the pane clears it, and so does
+  answering the agent. MSESH_HIGHLIGHT=0 drops all three.
+
+  The status bar sits at the top of msesh's sessions, where every other tabbed
+  thing on the machine puts its tab strip. MSESH_STATUS=bottom or =off.
 
 SEE ALSO
-  msesh help specs      the pane arguments
-  msesh help agents     which commands -e and --lazy apply to
+  msesh help specs      the pane arguments, and effort
+  msesh help agents     which commands --lazy applies to
   msesh help hooks      the turn-end signal these options fall back from
 EOF
 }
@@ -560,9 +644,9 @@ FILES
 
   Built in: shell, then the shells this machine has, then the agents on it —
   each the bare command, with flags left to you. A preset whose command runs
-  a known agent is treated as an agent pane: -e injects that agent's effort
-  flag, and --lazy leaves it pre-typed rather than started. Everything else
-  runs as written.
+  a known agent is treated as an agent pane: 'name/high' injects that agent's
+  effort flag, and --lazy leaves it pre-typed rather than started. Everything
+  else runs as written.
 
   For a one-off you do not want to name, use a spec instead:
     \$ msesh build 2 claude '!npm run dev'
@@ -596,13 +680,13 @@ DESCRIPTION
 
 EXAMPLES
   Save four claude panes at rising effort:
-    \$ msesh layout make quad 4 claude -e ladder
+    \$ msesh layout make quad shell claude/low claude/medium claude/high
 
   Build it, as often as you like:
     \$ msesh build quad
 
   The same session with one option overridden, under another name:
-    \$ msesh build quad -e x -s spike
+    \$ msesh build quad -s spike -w 2
 
   Save one you already built by hand:
     \$ msesh layout save work repo
@@ -646,17 +730,18 @@ USAGE
   msesh build [OPTIONS] N AGENT
 
 DESCRIPTION
-  Being an agent changes two things: -e adds that agent's own effort flag for
-  you, so you can say '-e high' without remembering how each one spells it;
-  and the pane opens pre-typed rather than started, because agents are slow
-  and expensive and you asked for panes, not for four running assistants.
+  Being an agent changes two things. A spec may carry an effort — 'claude/high'
+  — and msesh adds that agent's own flag for it, so you never have to remember
+  how each one spells it. And --lazy applies: an agent pane can be opened with
+  its command typed but unrun, which is worth having precisely because agents
+  are the slow, expensive ones to start.
 
 EXAMPLES
   Three claude panes at low, medium and high:
-    \$ msesh build 3 claude -e ladder
+    \$ msesh build claude/low claude/medium claude/high
 
-  Start them straight away instead of pre-typing:
-    \$ msesh build 3 claude --eager
+  Open them pre-typed instead of started:
+    \$ msesh build 3 claude --lazy
 
 ARGUMENTS
 EOF
@@ -670,7 +755,8 @@ EOF
     flag=${AGENT_EFFORT[$i]}; levels=${AGENT_LEVELS[$i]}
     # Resolved directly, not through preset_get: help is dispatched before the
     # presets are registered, so asking them would report everything missing.
-    if [ "${AGENT_NAMES[$i]}" = claude ] && [ -n "${CLAUDE_BIN:-}" ]; then
+    if [ "${AGENT_NAMES[$i]}" = claude ]; then
+      claude_bin_resolve
       cmd=$CLAUDE_BIN
     else
       cmd=$(command -v "${AGENT_NAMES[$i]}" 2>/dev/null || true)
@@ -687,9 +773,9 @@ EOF
 
   A pane is an agent pane if the command it runs is one of the above, so
   'review = claude /code-review' counts without being listed. An agent with
-  no effort flag is skipped by -e; a level it does not have is an error
-  naming both. -e replaces whatever effort the preset would have used, and a
-  preset that already names one is left alone.
+  no effort flag cannot take one, and asking says so; a level it does not have
+  is an error naming the ones it does. A preset whose command already spells
+  out an effort keeps it.
 
 FILES
   $file
@@ -978,6 +1064,30 @@ suggest_command() {
 # A first argument shaped like a spec is someone typing the old flagless form.
 # Say so precisely rather than making them read the whole manual to find out
 # that a verb is now required.
+# -e is gone. It set one list of efforts and dealt them across the session in
+# pane order, which made the effort a pane ran at a fact about its position:
+# 'ladder' meant exactly three panes, adding a shell in the middle shifted
+# everything after it, and an agent without that level shifted it again. Effort
+# now rides on the spec that asked for the pane, and 'ladder' is a layout —
+# a whole session you can look at and edit — rather than a special case in a
+# flag. Fatal rather than translated, because the two do not mean the same
+# thing and a silent reinterpretation of an old script is worse than a stop.
+effort_flag_gone() {
+  local had=${1:-} now= lvl
+  case $had in ladder|'') had='low,medium,high' ;; esac
+  local IFS=,
+  for lvl in $had; do
+    case $lvl in l|lo) lvl=low ;; m|med) lvl=medium ;; h|hi) lvl=high ;; x|xh) lvl=xhigh ;; esac
+    [ -n "$lvl" ] && now="$now claude/$lvl"
+  done
+  printf 'msesh: -e/--effort is gone — effort is part of the spec now.\n\n' >&2
+  printf '  was:  msesh build 3 claude -e %s\n' "${1:-ladder}" >&2
+  printf '  now:  msesh build%s\n' "$now" >&2
+  printf '\n  msesh build ladder        the shipped low/medium/high layout\n' >&2
+  printf '  msesh help specs          the whole spec syntax\n' >&2
+  exit 2
+}
+
 looks_like_spec() {
   case $1 in
     '!'*|'+'*) return 0 ;;
@@ -1037,12 +1147,12 @@ while [ $# -gt 0 ]; do
     --) ARGS+=("$@"); break ;;
     --session=*)  SESSION=${arg#*=}; SESSION_SET=1 ;;
     --dir=*)      WORKDIR=${arg#*=}; DIR_SET=1 ;;
-    --effort=*)   EFFORTS_RAW=${arg#*=} ;;
+    --effort=*)   effort_flag_gone "${arg#*=}" ;;
     --width=*)    PANES_PER_WINDOW=${arg#*=}; WIDTH_SET=1 ;;
     --notify=*)   NOTIFY_SILENCE=${arg#*=}; NOTIFY_SET=1 ;;
     --session)    SESSION=${1:?--session needs a value}; shift; SESSION_SET=1 ;;
     --dir)        WORKDIR=${1:?--dir needs a value}; shift; DIR_SET=1 ;;
-    --effort)     EFFORTS_RAW=${1:?--effort needs a value}; shift ;;
+    --effort)     effort_flag_gone "${1:-}" ;;
     --width)      PANES_PER_WINDOW=${1:?--width needs a value}; shift; WIDTH_SET=1 ;;
     --notify)     NOTIFY_SILENCE=${1:?--notify needs a value}; shift; NOTIFY_SET=1 ;;
     --no-notify)  NOTIFY_SILENCE=0; NOTIFY_SET=1 ;;
@@ -1059,7 +1169,7 @@ while [ $# -gt 0 ]; do
     --resume)     RESUME=1 ;;
     -s) SESSION=${1:?-s needs a value}; shift; SESSION_SET=1 ;;
     -d) WORKDIR=${1:?-d needs a value}; shift; DIR_SET=1 ;;
-    -e) EFFORTS_RAW=${1:?-e needs a value}; shift ;;
+    -e) effort_flag_gone "${1:-}" ;;
     -w) PANES_PER_WINDOW=${1:?-w needs a value}; shift; WIDTH_SET=1 ;;
     # The short form, not the whole manual: an error you have to scroll back
     # through to read is worse than no error.
@@ -1230,7 +1340,19 @@ $1
 # `cly` alias by hand: that alias lives in ~/.bashrc and bash only expands
 # aliases in interactive shells, while tmux runs pane commands through a
 # non-interactive one.
-CLAUDE_BIN=${CLAUDE_BIN:-$(command -v claude || echo claude)}
+#
+# Resolved on demand rather than at startup: it is a PATH walk, and on a
+# machine without claude it is a *missing*-name PATH walk, which is the
+# expensive kind. Every command paid for it, including 'msesh list'.
+CLAUDE_BIN=${CLAUDE_BIN:-}
+_claude_bin_resolved=0
+claude_bin_resolve() {
+  [ "$_claude_bin_resolved" = 0 ] || return 0
+  _claude_bin_resolved=1
+  [ -n "$CLAUDE_BIN" ] && return 0
+  CLAUDE_BIN=$(command -v claude 2>/dev/null || true)
+  return 0
+}
 # Empty by default. This used to carry --remote-control and
 # --dangerously-skip-permissions, which meant every claude pane msesh started
 # had permission prompts turned off without saying so.
@@ -1247,13 +1369,22 @@ preset_set() {
   PRESET_NAMES+=("$1"); PRESET_CMDS+=("$2")
 }
 
-preset_get() {
+preset_lookup() {
   local i
-  presets_probe                 # first read is what pays for the probing
   for i in "${!PRESET_NAMES[@]}"; do
     if [ "${PRESET_NAMES[$i]}" = "$1" ]; then printf '%s' "${PRESET_CMDS[$i]}"; return 0; fi
   done
   return 1
+}
+
+# One name, not the whole machine. See presets_probe for the cost of a miss;
+# the point here is that building four claude panes should ask one question
+# about claude, not fifteen questions about every shell and agent msesh has
+# ever heard of.
+preset_get() {
+  preset_lookup "$1" && return 0
+  probe_one "$1" || return 1
+  preset_lookup "$1"
 }
 
 # The shell a pane gets when nothing else was asked for: yours, not msesh's
@@ -1282,12 +1413,48 @@ preset_set shell "$PANE_SHELL -i"
 # Which shells and agents this machine actually has — a preset list offering
 # cmd.exe on Linux is lying about the machine.
 #
-# Deferred, because finding out is expensive and most commands never ask. Each
-# probe is a PATH walk, and a *miss* walks all of it; under WSL that PATH
-# carries every Windows directory, so one miss costs ~50ms over 9P and eight of
-# them cost 400 — which 'msesh list' was paying to learn about agents it had no
-# intention of mentioning. Built on first use instead, which for list, kill,
-# status, version and help is never.
+# Deferred, and then narrowed, because finding out is expensive. Each probe is
+# a PATH walk, and a *miss* walks all of it: under WSL that PATH carries every
+# Windows directory, and one miss measured 113 ms here against 0.4 ms for a
+# hit. Fifteen names, most of them missing on any given machine, is most of a
+# second — which every `msesh build` was paying, to learn about shells and
+# agents nobody had mentioned. That was the whole of the build slowness.
+#
+# So there are two entry points, and the narrow one is the one builds use:
+#
+#   probe_one NAME   asks about one name; usually one probe, often none
+#   presets_probe    asks about all of them, for the commands that enumerate
+#                    — 'preset list', 'doctor', tab completion
+#
+# Nothing is cached to disk on purpose. A cache would have to guess when a
+# newly installed agent invalidates it, and getting that wrong means msesh
+# insisting a tool you just installed does not exist. Asking only about what
+# was named is cheaper *and* always right.
+probe_one() {
+  local _n=$1 _pname _pcmd
+  # An agent, from the same table that knows how to spell its effort flag —
+  # rather than a second hand-written list that could disagree with it.
+  if agent_field "$_n" levels >/dev/null 2>&1; then
+    if [ "$_n" = claude ]; then
+      claude_bin_resolve
+      [ -n "$CLAUDE_BIN" ] || return 1
+      preset_set claude "$CLAUDE_BIN${CLAUDE_FLAGS:+ $CLAUDE_FLAGS}"
+      return 0
+    fi
+    command -v "$_n" >/dev/null 2>&1 || return 1
+    preset_set "$_n" "$_n"
+    return 0
+  fi
+  # A shell. plat_shell_presets answers about one name when given one, so a
+  # machine with no zsh is not asked about zsh to find out about bash.
+  while IFS== read -r _pname _pcmd; do
+    [ -n "$_pname" ] && preset_set "$_pname" "$_pcmd"
+  done <<EOF
+$(plat_shell_presets "$_n")
+EOF
+  preset_lookup "$_n" >/dev/null
+}
+
 _presets_probed=0
 presets_probe() {
   [ "$_presets_probed" = 0 ] || return 0
@@ -1298,14 +1465,8 @@ presets_probe() {
   done <<EOF
 $(plat_shell_presets)
 EOF
-  # Agents, from the same table that knows how to spell their effort flags —
-  # rather than a second hand-written list that could disagree with it.
   for _a in ${AGENT_NAMES[@]+"${AGENT_NAMES[@]}"}; do
-    if [ "$_a" = claude ] && [ -n "${CLAUDE_BIN:-}" ] && [ -x "$CLAUDE_BIN" ]; then
-      preset_set claude "$CLAUDE_BIN${CLAUDE_FLAGS:+ $CLAUDE_FLAGS}"
-    elif command -v "$_a" >/dev/null 2>&1; then
-      preset_set "$_a" "$_a"
-    fi
+    probe_one "$_a" || true
   done
 }
 
@@ -1354,7 +1515,10 @@ manifest_save() {
     echo "# restore with: msesh restore $SESSION"
     printf 'version=%s\n' "$MSESH_FORMAT"
     printf 'dir=%s\n'     "$WORKDIR"
-    printf 'effort=%s\n'  "$EFFORTS_RAW"
+    # Only when there is one, and there only ever is one on a session first
+    # recorded by a msesh that still had -e. Writing an empty key on every
+    # build kept a dead setting looking alive in every file on disk.
+    [ -n "$EFFORTS_RAW" ] && printf 'effort=%s\n' "$EFFORTS_RAW"
     printf 'eager=%s\n'   "$EAGER"
     printf 'width=%s\n'   "$PANES_PER_WINDOW"
     printf 'notify=%s\n'  "$NOTIFY_SILENCE"
@@ -1486,8 +1650,18 @@ snapshot_newest() {
 MANIFEST_LOADED=0
 
 conf_read() {
-  local f=$1 key val line
+  local f=$1
   [ -r "$f" ] || return 1
+  conf_apply "$f" < "$f"
+}
+
+# The reader itself, taking the lines on stdin so that a definition msesh ships
+# rather than stores — see builtin_layout — goes through exactly the same
+# parsing as one on disk. Not a pipeline anywhere it is called: every key here
+# sets a variable in this shell, and a subshell would parse the file perfectly
+# and then throw the answers away.
+conf_apply() {
+  local f=$1 key val line
   while IFS= read -r line || [ -n "$line" ]; do
     line=${line%%$'\r'}
     case $line in ''|'#'*) continue ;; *=*) ;; *) continue ;; esac
@@ -1516,7 +1690,7 @@ conf_read() {
                echo "msesh: $f is format $val, this msesh knows $MSESH_FORMAT — reading it anyway" >&2 ;;
         esac ;;
     esac
-  done < "$f"
+  done
   return 0
 }
 
@@ -1547,14 +1721,59 @@ manifest_names() {
 # read, `msesh add` edited it, and `msesh forget` deleted it.
 LAYOUT_DIR=${MSESH_LAYOUTS:-$(plat_config_home)/layouts}
 layout_of()     { printf '%s/%s.conf' "$LAYOUT_DIR" "$1"; }
-layout_exists() { [ -r "$(layout_of "$1")" ]; }
-layout_load()   { conf_read "$(layout_of "$1")"; }
+
+# Layouts msesh ships. 'ladder' is here because it used to be a flag: -e ladder
+# meant a low/medium/high sequence dealt across whatever panes happened to
+# exist, which is a session shape wearing an option's clothes. As a layout it
+# is the thing it always was — a session you can read, copy and edit — and it
+# costs nothing on a machine that never builds it.
+#
+# No dir= on purpose: a shipped layout is not about one directory, so it builds
+# wherever you are standing, the way 'msesh build 4' does. Copy it into your
+# own layouts ('msesh layout make') if you want it pinned somewhere.
+builtin_layout() {
+  case $1 in
+    ladder)
+      printf '# msesh built-in layout %s — a shell and three claude panes,\n' "$1"
+      printf '# low, medium and high. Copy it with: msesh layout make mine shell claude/low claude/medium claude/high\n'
+      printf 'version=%s\n' "$MSESH_FORMAT"
+      printf 'layout=1\n'
+      printf 'eager=1\n'
+      printf 'width=4\n'
+      printf 'notify=20\n'
+      printf 'spec=shell\n'
+      printf 'spec=claude/low\n'
+      printf 'spec=claude/medium\n'
+      printf 'spec=claude/high\n' ;;
+    *) return 1 ;;
+  esac
+}
+BUILTIN_LAYOUTS='ladder'
+
+# A file of the same name wins, always: a shipped definition you cannot
+# override is a definition you have to work around.
+layout_exists() {
+  [ -r "$(layout_of "$1")" ] && return 0
+  builtin_layout "$1" >/dev/null 2>&1
+}
+layout_is_builtin() { [ ! -r "$(layout_of "$1")" ] && builtin_layout "$1" >/dev/null 2>&1; }
+layout_load() {
+  conf_read "$(layout_of "$1")" && return 0
+  builtin_layout "$1" >/dev/null 2>&1 || return 1
+  conf_apply "built-in layout '$1'" < <(builtin_layout "$1")
+}
 
 layout_names() {
-  local f n
+  local f n b seen
+  seen=
   for f in "$LAYOUT_DIR"/*.conf; do
     [ -e "$f" ] || continue
-    n=${f##*/}; printf '%s\n' "${n%.conf}"
+    n=${f##*/}; n=${n%.conf}
+    printf '%s\n' "$n"; seen="$seen $n "
+  done
+  for b in $BUILTIN_LAYOUTS; do
+    case $seen in *" $b "*) continue ;; esac
+    printf '%s\n' "$b"
   done
 }
 
@@ -1590,11 +1809,21 @@ layout_migrate
 
 # The name becomes a key in presets.conf and, for a layout, a filename. One
 # rule covering both is easier to explain than two.
+# One namespace, three kinds of thing: 'msesh build X' will read X as a pane
+# count, a layout or a preset, in that order, and the only way that stays
+# predictable is if a name cannot be mistaken for a count. The character set
+# already rules out the spec punctuation — '!' and '+' start a spec, ':' counts
+# panes, '/' now sets effort — so what is left to say is that a name may not be
+# a number.
 preset_name_ok() {
   case $1 in
     '') die "a preset needs a name" ;;
     *[!A-Za-z0-9._-]*)
       die "preset names take letters, digits, dot, dash and underscore — got '$1'" ;;
+  esac
+  case $1 in
+    *[!0-9]*) ;;
+    *) die "'$1' is a number, and a number already means a pane count — 'msesh build $1' would build $1 panes" ;;
   esac
   return 0
 }
@@ -1657,7 +1886,7 @@ layout_save() {
     printf 'version=%s\n' "$MSESH_FORMAT"
     printf 'layout=1\n'
     printf 'dir=%s\n'    "$dir"
-    printf 'effort=%s\n' "$effort"
+    [ -n "$effort" ] && printf 'effort=%s\n' "$effort"
     printf 'eager=1\n'
     printf 'width=%s\n'  "$width"
     printf 'notify=%s\n' "$notify"
@@ -1685,9 +1914,10 @@ ask() {
 WIZ_SPECS=()
 
 wizard_panes() {
-  local panes=$1 specs=() i=1 choice pcmd
+  local panes=$1 specs=() i=1 choice pcmd bare
   while [ "$i" -le "$panes" ]; do
-    ask "  pane $i — a preset name, or a \"literal command\"" "$DEFAULT_PRESET" choice
+    ask "  pane $i — a preset name (add /high for effort), or a \"literal command\"" \
+        "$DEFAULT_PRESET" choice
     case $choice in
       # A quoted answer is a command to run as-is, which is what the ! spec
       # means. Accepting the quotes the user typed rather than making them
@@ -1699,14 +1929,17 @@ wizard_panes() {
       '!'*)
         specs+=("$choice") ;;
       *)
-        if ! preset_get "$choice" >/dev/null; then
-          echo "    '$choice' is not a preset yet." >&2
-          ask "    command for '$choice' (blank to give up)" "" pcmd
-          [ -n "$pcmd" ] || die "no command for '$choice' — nothing written"
-          preset_name_ok "$choice"
-          preset_file_set "$choice" "$pcmd"
-          preset_set "$choice" "$pcmd"
-          echo "    added preset '$choice' = $pcmd" >&2
+        # The effort half is not part of the name being looked up, or an
+        # answer of 'claude/high' would offer to invent a preset called that.
+        bare=${choice%%/*}
+        if ! preset_get "$bare" >/dev/null; then
+          echo "    '$bare' is not a preset yet." >&2
+          ask "    command for '$bare' (blank to give up)" "" pcmd
+          [ -n "$pcmd" ] || die "no command for '$bare' — nothing written"
+          preset_name_ok "$bare"
+          preset_file_set "$bare" "$pcmd"
+          preset_set "$bare" "$pcmd"
+          echo "    added preset '$bare' = $pcmd" >&2
         fi
         specs+=("$choice") ;;
     esac
@@ -1721,7 +1954,9 @@ WIZ_DIR= WIZ_EFFORT= WIZ_WIDTH= WIZ_NOTIFY= WIZ_WINDOWS=
 wizard_settings() {
   ask "Working directory" "$PWD" WIZ_DIR
   [ -d "$WIZ_DIR" ] || die "no such directory: $WIZ_DIR"
-  ask "Effort for agent panes — blank, 'ladder', or l,m,h" "" WIZ_EFFORT
+  # No effort question: effort belongs to a pane, and the pane questions above
+  # already take it — answer 'claude/high' and that is what that pane runs at.
+  WIZ_EFFORT=
   ask "Max panes per window" "4" WIZ_WIDTH
   case $WIZ_WIDTH in ''|*[!0-9]*) die "width must be a number, got '$WIZ_WIDTH'" ;; esac
   # Asked after the width, because until that is answered you do not know how
@@ -1741,6 +1976,8 @@ preset_make() {
   # Told everything up front: no questions. This is the form to put in a script.
   if [ -n "$name" ] && [ -n "$cmd" ]; then
     preset_name_ok "$name"
+    layout_exists "$name" &&
+      echo "msesh: note — '$name' is also a layout, and a layout is what 'msesh build $name' uses; this preset is reachable as 'msesh build 2 $name'" >&2
     preset_file_set "$name" "$cmd"
     echo "msesh: preset '$name' = $cmd"
     echo "msesh: use it with 'msesh build 4 $name'"
@@ -1752,6 +1989,11 @@ preset_make() {
   if preset_get "$name" >/dev/null; then
     echo "msesh: '$name' already exists — this will replace it" >&2
   fi
+  # The mirror of the warning layout_make gives. A layout wins 'msesh build
+  # NAME' outright, so a preset hiding behind one is reachable only inside a
+  # spec list, and saying so beats finding out.
+  layout_exists "$name" &&
+    echo "msesh: note — '$name' is also a layout, and a layout is what 'msesh build $name' uses; this preset is reachable as 'msesh build 2 $name'" >&2
 
   local panes
   ask "How many panes" "1" panes
@@ -1764,10 +2006,15 @@ preset_make() {
   # the pane count first means the answer decides which of the two you get, so
   # someone who came here for a preset and described a session still gets one.
   if [ "$panes" = 1 ]; then
-    local pcmd
-    case ${WIZ_SPECS[0]} in
-      '!'*) pcmd=${WIZ_SPECS[0]#!} ;;
-      *)    pcmd=$(preset_get "${WIZ_SPECS[0]}") ;;
+    local pcmd one=${WIZ_SPECS[0]} bare eff
+    case $one in
+      '!'*) pcmd=${one#!} ;;
+      *)    bare=${one%%/*}; eff=
+            case $one in */*) eff=${one##*/} ;; esac
+            pcmd=$(preset_get "$bare")
+            # An effort answered in the wizard belongs in the command the
+            # preset names, or the preset would quietly drop it.
+            [ -z "$eff" ] || IFS=$'\t' read -r pcmd _ < <(spec_effort "$bare" "$eff" "$pcmd") ;;
     esac
     preset_file_set "$name" "$pcmd"
     echo "msesh: preset '$name' = $pcmd"
@@ -1868,8 +2115,27 @@ if [ "$SESSION_SET" = 0 ]; then
       elif [ "$ATTACH_ONLY" = 1 ]; then name_required attach
       else
         SESSION=$(session_name_from_dir)
-        [ "$DRY_RUN" = 1 ] || [ "$ADD" = 1 ] ||
-          echo "msesh: no -s given, so naming it '$SESSION' after this directory"
+        # A second unnamed build in the same directory is a second session,
+        # not a return to the first. It used to attach instead, which meant
+        # two agents' worth of work went into one set of panes and the
+        # "already up — attaching" line was the only warning. Numbered the way
+        # a file manager numbers a duplicate: the original keeps the plain
+        # name, and only what is *live* pushes the counter — a name whose
+        # session is closed is free again, and building it restores it.
+        #
+        # 'add' and 'rebuild' are exempt: both name an existing session by
+        # meaning, so bumping past it would target the wrong one.
+        if [ "$ADD" = 0 ] && [ "$FRESH" = 0 ] && session_exists "$SESSION"; then
+          _base=$SESSION _n=2
+          while session_exists "$_base-$_n"; do _n=$((_n + 1)); done
+          SESSION=$_base-$_n
+          [ "$DRY_RUN" = 1 ] ||
+            echo "msesh: '$_base' is already up, so this one is '$SESSION' ('msesh attach $_base' for the other)"
+          unset _base _n
+        else
+          [ "$DRY_RUN" = 1 ] || [ "$ADD" = 1 ] ||
+            echo "msesh: no -s given, so naming it '$SESSION' after this directory"
+        fi
       fi ;;
   esac
 fi
@@ -1889,7 +2155,7 @@ case $ACTION in
       if session_is_live "$n"; then printf '  %-16s up\n' "$n"
       else                         printf '  %s\n'       "$n"; fi
     done < <(layout_names)
-    [ "$found" = 1 ] || echo "  (none yet — 'msesh layout make NAME 4 claude -e ladder')"
+    [ "$found" = 1 ] || echo "  (none yet — 'msesh layout make NAME shell claude/low claude/high')"
     echo "recorded sessions (restore with msesh restore NAME):"
     found=0
     while IFS= read -r n; do
@@ -2277,7 +2543,9 @@ PY
       say warn notifier "none found — alerts fall back to a tmux message"
     fi
 
-    if command -v "$CLAUDE_BIN" >/dev/null 2>&1 || [ -x "$CLAUDE_BIN" ]; then
+    claude_bin_resolve
+    if [ -n "$CLAUDE_BIN" ] &&
+       { command -v "$CLAUDE_BIN" >/dev/null 2>&1 || [ -x "$CLAUDE_BIN" ]; }; then
       say ok claude "$CLAUDE_BIN"
     else
       say warn claude "not on PATH — the claude presets will fail, others are fine"
@@ -2520,16 +2788,22 @@ PY
           found=1
           # The pane list is what you actually want to be reminded of, and it
           # is one line, so there is no reason to make 'show' the only way.
-          specs=$(sed -n 's/^spec=//p' "$(layout_of "$n")" 2>/dev/null | paste -sd ' ' -)
-          printf '  %-16s %s\n' "$n" "$specs"
+          if layout_is_builtin "$n"; then
+            specs=$(builtin_layout "$n" | sed -n 's/^spec=//p' | paste -sd ' ' -)
+            printf '  %-16s %s  (built-in)\n' "$n" "$specs"
+          else
+            specs=$(sed -n 's/^spec=//p' "$(layout_of "$n")" 2>/dev/null | paste -sd ' ' -)
+            printf '  %-16s %s\n' "$n" "$specs"
+          fi
         done < <(layout_names)
-        [ "$found" = 1 ] || echo "  (none yet — 'msesh layout make NAME 4 claude -e ladder')"
+        [ "$found" = 1 ] || echo "  (none yet — 'msesh layout make NAME shell claude/low claude/high')"
         ;;
       show|cat)
         lname=${LAYOUT_ARGS[0]:-}
         [ -n "$lname" ] || die "layout show needs a name (msesh layout list)"
         layout_exists "$lname" || die "no layout '$lname' (msesh layout list)"
-        cat "$(layout_of "$lname")"
+        if layout_is_builtin "$lname"; then builtin_layout "$lname"
+        else cat "$(layout_of "$lname")"; fi
         ;;
       make|new)
         layout_make
@@ -2541,13 +2815,26 @@ PY
         lname=${LAYOUT_ARGS[0]:-}
         [ -n "$lname" ] || die "layout remove needs a name (msesh layout list)"
         layout_exists "$lname" || die "no layout '$lname' (msesh layout list)"
+        layout_is_builtin "$lname" &&
+          die "'$lname' is built into msesh — there is no file to remove ('msesh layout make $lname ...' shadows it instead)"
         rm -f "$(layout_of "$lname")"
         echo "msesh: removed layout '$lname'"
+        # A removed file uncovers the shipped definition underneath it, the
+        # same way removing a preset does.
+        layout_exists "$lname" &&
+          echo "msesh: '$lname' is the built-in again — 'msesh layout show $lname'"
         ;;
       edit)
         lname=${LAYOUT_ARGS[0]:-}
         [ -n "$lname" ] || die "layout edit needs a name (msesh layout list)"
         layout_exists "$lname" || die "no layout '$lname' (msesh layout list)"
+        # Editing a built-in writes a copy first, so the edit has somewhere to
+        # go and the shipped one stays intact underneath it.
+        if layout_is_builtin "$lname"; then
+          mkdir -p "$LAYOUT_DIR" || die "cannot write to $LAYOUT_DIR"
+          builtin_layout "$lname" > "$(layout_of "$lname")"
+          echo "msesh: copied the built-in '$lname' to $(layout_of "$lname") to edit"
+        fi
         ed=${VISUAL:-${EDITOR:-}}
         if [ -z "$ed" ]; then ed=$(command -v nano || command -v vi || true); fi
         [ -n "$ed" ] ||
@@ -2666,12 +2953,12 @@ elif [ "${#SPECS[@]}" -eq 0 ] && { ! session_exists "$SESSION" || [ "$FRESH" = 1
   fi
 fi
 
-# Agent panes are lazy unless you said something. Asking for four panes should
-# not start four agents: they are slow, they cost money, and half of them are
-# usually there to be used later. Naming an effort with -e is taken as "yes, I
-# mean it" — as is --eager. Shell panes are unaffected; --lazy only ever
-# applied to agents.
-if [ "$EAGER_SET" = 0 ] && [ -z "$EFFORTS_RAW" ]; then EAGER=0; fi
+# Agent panes start. This used to default the other way — pre-type the command
+# and leave it unrun — on the theory that four agents is expensive and half of
+# them are there for later. In use it was worse than the cost it saved: every
+# pane in a fresh session sat at a prompt with text in it that looked like
+# something had gone wrong, and the first thing anyone did was press Enter in
+# all four. --lazy is still there for when the theory is right.
 
 [ -d "$WORKDIR" ] || die "no such directory: $WORKDIR"
 case $PANES_PER_WINDOW in ''|*[!0-9]*) die "--width needs a number, got '$PANES_PER_WINDOW'" ;; esac
@@ -2688,10 +2975,15 @@ PANE_DIR=()      # where it starts; empty means the session's --dir
 pending=
 
 add_panes() {
-  local name=$1 count=$2 cmd label
+  local name=$1 count=$2 cmd label effort= suffix=
   case $name in
     '!'*) cmd=${name#!}; label=${cmd%% *} ;;
-    *)    # Caught here rather than only where a build resolves a layout, so
+    *)    case $name in
+            */*) effort=${name##*/}; name=${name%/*}
+                 [ -n "$effort" ] || die "empty effort in '$1' — try '$name/high'"
+                 [ -n "$name" ]   || die "no preset in '$1' — try 'claude/$effort'" ;;
+          esac
+          # Caught here rather than only where a build resolves a layout, so
           # that 'msesh add quad' and 'msesh build 3 quad' get the same answer
           # as each other instead of "unknown preset".
           if layout_exists "$name"; then
@@ -2705,7 +2997,11 @@ add_panes() {
             fi
             die "unknown preset '$name' (msesh preset list)"
           fi
-          label=$name ;;
+          label=$name
+          if [ -n "$effort" ]; then
+            IFS=$'\t' read -r cmd suffix < <(spec_effort "$name" "$effort" "$cmd")
+            label=$label$suffix
+          fi ;;
   esac
   local n=0
   while [ "$n" -lt "$count" ]; do
@@ -2723,7 +3019,10 @@ for spec in ${SPECS[@]+"${SPECS[@]}"}; do
   name=${spec#+}
   count=1
   case $name in
-    '!'*) : ;;                                       # literal command, never NAME:N
+    # A literal command, so never NAME:N — but a pending count still counts.
+    # It did not, once, and 'msesh build 2 !htop' quietly built three panes:
+    # one htop, then two more when the unconsumed 2 was flushed at the end.
+    '!'*) if [ -n "$pending" ]; then count=$pending; pending=; fi ;;
     *:*)  count=${name##*:}; name=${name%:*}
           case $count in ''|*[!0-9]*) die "bad count in '$spec'" ;; esac ;;
     *)    if [ -n "$pending" ]; then count=$pending; pending=; fi ;;
@@ -2733,12 +3032,14 @@ done
 [ -n "$pending" ] && add_panes "$DEFAULT_PRESET" "$pending"
 [ "${#PANE_CMD[@]}" -gt 0 ] || add_panes "$DEFAULT_PRESET" 1
 
-# --- effort levels ----------------------------------------------------------
+# --- effort levels, for files written before they moved into the spec ---------
+# Nothing on the command line reaches this any more: -e is gone and no file
+# msesh writes carries 'effort=' now. It stays for the manifests, layouts and
+# snapshots already on disk, which do — deleting it would make a restore of a
+# session recorded last week come back at the wrong effort silently, which is
+# the one outcome worse than a little dead-looking code.
+#
 # Assigned in order across the panes that can take one, last value repeating.
-# 'ladder' is spelled out in generic level names rather than resolved per agent
-# so that one -e means one sequence however many different agents are in the
-# session; whether a given agent actually has the level it lands on is checked
-# below, per pane.
 EFFORTS=()
 if [ -n "$EFFORTS_RAW" ]; then
   [ "$EFFORTS_RAW" = ladder ] && EFFORTS_RAW=low,medium,high
@@ -2755,7 +3056,7 @@ if [ -n "$EFFORTS_RAW" ]; then
   done
 fi
 
-# A pane takes part in -e only if its agent has an effort flag at all. A shell
+# A pane takes part only if its agent has an effort flag at all. A shell
 # pane, or an agent that has no such setting, is skipped rather than counted
 # and then not injected — otherwise a session mixing claude with gemini would
 # assign the second level to a pane that cannot use it and quietly shift every
@@ -3187,10 +3488,18 @@ else
       # the flag is put back explicitly. The comma inside the style is escaped
       # or the format parser reads it as the end of the true branch.
       if [ "$HIGHLIGHT" != 0 ]; then
+        # Three states, and they are deliberately not equally loud. @alert is
+        # set only where something actually asked — a pane blocked on you, or a
+        # bell — and it is the one that goes red, because the status bar is how
+        # you find *which window* to press from another window. Silence is not
+        # a request: it dims and carries a '~'. It used to be red here, which
+        # meant a window nobody had typed in for twenty seconds looked exactly
+        # like one that was blocked, and that is what taught you to ignore red.
+        #
         # Nested #{?} rather than #{||:}: both evaluate the same, and this one
         # cannot be misread when someone comes back to edit it.
         "$TMUX_BIN" set-window-option -t "$WIN" window-status-format \
-          '#{?window_silence_flag,#[fg=colour196#,bold] #I #W !#[default],#{?window_bell_flag,#[fg=colour196#,bold] #I #W !#[default], #I #W }}' >/dev/null
+          '#{?#{@alert},#[fg=colour196#,bold] #I #W !#[default],#{?window_bell_flag,#[fg=colour196#,bold] #I #W !#[default],#{?window_silence_flag,#[fg=colour244] #I #W ~#[default], #I #W }}}' >/dev/null
       fi
     fi
     "$TMUX_BIN" select-pane -t "$WIN.$PBASE"
@@ -3207,6 +3516,19 @@ else
   # possibly-Windows-side shell, and the helper can ask tmux which windows are
   # flagged once it is running MSYS2-side, where formats are safe.
   "$TMUX_BIN" set-option -t "$SESSION" @msesh 1 >/dev/null
+
+  # The window list goes at the top. tmux puts its status line at the bottom by
+  # default, which is where a shell prompt lives and where a terminal's own
+  # tabs do not: every other tabbed thing on the machine — the browser, the
+  # editor, Windows Terminal itself — puts the list of things you can switch to
+  # above the thing you are looking at, and msesh's status line is exactly that
+  # list. Session-scoped, so nothing outside msesh's sessions moves.
+  # MSESH_STATUS=bottom puts it back, MSESH_STATUS=off hides it.
+  case ${MSESH_STATUS:-top} in
+    off|0)  "$TMUX_BIN" set-option -t "$SESSION" status off >/dev/null ;;
+    bottom) "$TMUX_BIN" set-option -t "$SESSION" status-position bottom >/dev/null ;;
+    *)      "$TMUX_BIN" set-option -t "$SESSION" status-position top >/dev/null ;;
+  esac
 
   # Anything a pane launches should be able to say which pane it came from.
   # What that takes is a platform question; here it is only a list of pairs.
@@ -3260,11 +3582,15 @@ else
     # sessions is restyled. Set MSESH_HIGHLIGHT=0 to leave all three alone.
     if [ "$HIGHLIGHT" != 0 ]; then
       "$TMUX_BIN" set-option -t "$SESSION" set-titles on >/dev/null
-      # session_alerts spells the alert type into the list — silence is '2~',
-      # not '2' — and the number on its own is the key you press, so the
-      # suffixes come off before the title claims otherwise.
+      # Driven by @wants — the window index msesh-notify writes when a pane in
+      # it is blocked on you, and clears when none is — rather than by
+      # session_alerts. session_alerts counts silence as an alert, so the tab
+      # title shouted '(!) window 2 waiting' at a window that had merely gone
+      # quiet, which is the loudest possible way to say nothing is happening.
+      # A tab title is read from another application; it should only ever
+      # interrupt for the one thing that cannot proceed without you.
       "$TMUX_BIN" set-option -t "$SESSION" set-titles-string \
-        '#{?session_alerts,(!) ,}msesh: #S#{?session_alerts, — window #{s/[~!]//:session_alerts} waiting,}' >/dev/null
+        '#{?#{@wants},(!) msesh: #S — window #{@wants} needs you,msesh: #S}' >/dev/null
     fi
   fi
 

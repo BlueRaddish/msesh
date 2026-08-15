@@ -1,27 +1,34 @@
 # msesh presets — copy to ~/.config/msesh/presets.conf and edit.
 #
 # One `name = command` per line. These override the built-ins of the same name,
-# so redefining `claude` here changes what a bare `msesh build 4` launches.
+# so redefining `claude` here changes what `msesh build 4 claude` launches.
 #
-# A preset whose command runs claude is detected as a claude pane: it gets
-# --effort injected when you pass -e, and it is what --lazy leaves pre-typed
-# rather than started. Everything else is run as-is.
+# A preset whose command runs a known agent is detected as an agent pane: it
+# can take an effort on the spec — `msesh build myclaude/high` adds that
+# agent's own effort flag — and it is what `--lazy` leaves pre-typed rather
+# than started. Everything else is run as-is.
+#
+# A preset that already spells out an effort keeps it; a spec will not add a
+# second one.
 #
 # `msesh preset list` shows what is currently defined, built-ins first;
 # `msesh preset edit` opens this file; `msesh help preset` explains the rest.
 
 # --- built-ins, shown here so you can see the shape ---------------------------
-# claude = claude --remote-control --dangerously-skip-permissions
-# cly    = claude --remote-control --dangerously-skip-permissions
-# plan   = claude --remote-control --permission-mode plan
-# safe   = claude --remote-control
+# Each is the bare command, with flags left to you.
+# shell  = your shell, interactive
 # bash   = bash -i          (also: sh)
 # pwsh   = powershell.exe -NoLogo   (also: ps)
 # cmd    = cmd.exe
+# claude = claude
+# codex  = codex
 
 # --- your own ----------------------------------------------------------------
-# A claude pane that starts in a specific repo:
-# work = cd /c/Users/me/projects/thing && claude --remote-control
+# A claude pane that skips the permission prompts:
+# yolo = claude --dangerously-skip-permissions
+
+# A claude pane pinned to plan mode:
+# plan = claude --permission-mode plan
 
 # A pane that watches a build:
 # watch = npm run dev

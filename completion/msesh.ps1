@@ -21,7 +21,7 @@ Register-ArgumentCompleter -Native -CommandName msesh -ScriptBlock {
                 ForEach-Object { $_.ToString() })
 
     # Options that take a value, so the word after them is not the verb.
-    $valued = @('-s', '-d', '-e', '-w', '--session', '--dir', '--effort',
+    $valued = @('-s', '-d', '-w', '--session', '--dir',
                 '--width', '--notify', '--windows')
 
     $cmd = $null
@@ -48,7 +48,6 @@ Register-ArgumentCompleter -Native -CommandName msesh -ScriptBlock {
     $candidates = @()
 
     switch -Regex ($prev) {
-        '^(-e|--effort)$'  { $candidates = @('low','medium','high','xhigh','ladder') }
         '^(-s|--session)$' { $candidates = Get-MseshNames 'sessions' }
         '^(-w|--width|--notify|--windows|-d|--dir)$' { return }
         default {
@@ -56,9 +55,10 @@ Register-ArgumentCompleter -Native -CommandName msesh -ScriptBlock {
                 $candidates = Get-MseshNames 'commands'
             }
             elseif ($wordToComplete.StartsWith('-')) {
-                $candidates = @('-s','-d','-e','-w','-n','--session','--dir',
-                    '--effort','--width','--windows','--notify','--no-notify',
-                    '--lazy','--ephemeral','--no-tab','--no-trust','--dry-run','--all')
+                $candidates = @('-s','-d','-w','-n','--session','--dir',
+                    '--width','--windows','--notify','--no-notify',
+                    '--lazy','--eager','--ephemeral','--no-tab','--no-trust',
+                    '--dry-run','--all')
                 if ($cmd -eq 'send') { $candidates += '--no-enter' }
             }
             else {

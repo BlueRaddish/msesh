@@ -22,6 +22,12 @@
 # scan still earns its place for panes that are not agents: a build, a test run,
 # a REPL, none of which will ever call a hook.
 #
+# Only one of these interrupts you, and that is the point. --needs-input toasts,
+# because the agent is blocked and nothing happens until you answer. A finished
+# turn marks its pane and stays quiet; silence dims a window and stays quiet.
+# An alert that fires when nothing is wanted is an alert you stop reading, and
+# then the one that matters goes unread with it.
+#
 # tmux only raises window alerts for windows you are not currently looking at,
 # which is the behaviour you want: no toast for the pane already on screen.
 # --turn-end keeps that rule deliberately, by checking the pane's window is not
@@ -44,6 +50,49 @@ TMUX_BIN=$(plat_tmux)
 # desktop notifier at all. Backgrounded because some notifiers block for the
 # lifetime of the notification and nothing here is worth waiting on.
 toast() { plat_notify "$1" "${2:-}" & }
+
+# --- which window, if any, is blocked on you ---------------------------------
+# Recomputed rather than decremented: several panes across several windows can
+# be blocked at once, and a counter would drift the first time one of them was
+# cleared by a route that forgot to decrement it. Asking is one tmux call and
+# only happens when a mark is cleared.
+#
+# The lowest window index wins when more than one wants you, so the tab title
+# names somewhere real to go rather than flickering between two.
+wants_recheck() {
+  local sess=$1 w
+  w=$("$TMUX_BIN" list-panes -s -t "=$sess" -F '#{?#{==:#{@turn},input},#{window_index},}' \
+      2>/dev/null | grep . | sort -n | head -1)
+  if [ -n "$w" ]; then "$TMUX_BIN" set-option -t "$sess" @wants "$w" 2>/dev/null
+  else                 "$TMUX_BIN" set-option -t "$sess" -u @wants 2>/dev/null; fi
+}
+
+# --- when a finished turn is worth interrupting for --------------------------
+# It mostly is not, and this is the change that made these alerts usable again.
+# A turn ending is not a request: the agent wants nothing, it has simply
+# stopped, and toasting every time one did meant a working session raised a
+# desktop notification every minute or two. That is how an alert stops being
+# read — and the alert that must be read, "blocked waiting for you", was in the
+# same voice as all the noise.
+#
+# So a finished turn is *marked* and not announced: the pane border says
+# '<< done >>' until something clears it, which is there whenever you look and
+# costs nothing when you do not. The one case that still toasts is a session
+# with no client attached at all — the tab is closed, nobody can see the mark,
+# and it is the only remaining way to say so.
+#
+# MSESH_TURN_END_TOAST: auto (the above, default), always, never.
+turn_end_toast() {
+  local sess=$1 widx=$2 label=$3 attached=$4 prefix
+  case ${MSESH_TURN_END_TOAST:-auto} in
+    never|0)  return 0 ;;
+    always|1) ;;
+    *) [ "${attached:-0}" = 0 ] || return 0 ;;
+  esac
+  prefix=$("$TMUX_BIN" show-options -gv prefix 2>/dev/null || echo prefix)
+  toast "msesh: ${label:-a pane} finished — $sess" \
+        "Window $widx is waiting on you. Go to the '$sess' tab, then press ${prefix:-prefix} $widx."
+}
 
 # --- session-start mode --------------------------------------------------------
 # Claude Code hands a SessionStart hook a JSON object on stdin carrying the
@@ -136,18 +185,15 @@ if [ "${1:-}" = "--agent-notify" ]; then
   [ -x "$TMUX_BIN" ] || command -v "$TMUX_BIN" >/dev/null 2>&1 || exit 0
 
   info=$("$TMUX_BIN" display-message -t "$pane" -p \
-    '#{session_name}|#{window_index}|#{@label}|#{@msesh}' 2>/dev/null) || exit 0
-  IFS='|' read -r sess widx label stamp <<< "$info"
+    '#{session_name}|#{window_index}|#{@label}|#{@msesh}|#{session_attached}' 2>/dev/null) || exit 0
+  IFS='|' read -r sess widx label stamp sattached <<< "$info"
   [ "$stamp" = 1 ] || exit 0
 
   "$TMUX_BIN" set-option -p -t "$pane" @turn waiting 2>/dev/null
   "$TMUX_BIN" set-window-option -t "$sess:$widx" monitor-activity on 2>/dev/null
-  "$TMUX_BIN" set-window-option -t "$sess:$widx" @alert 1 2>/dev/null
   "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified 1 2>/dev/null
   "$TMUX_BIN" refresh-client -S 2>/dev/null
-
-  toast "msesh: ${label:-a pane} finished — $sess" \
-        "Window $widx is waiting on you."
+  turn_end_toast "$sess" "$widx" "$label" "$sattached"
   exit 0
 fi
 
@@ -168,6 +214,7 @@ if [ "${1:-}" = "--resumed" ] || [ "${1:-}" = "--seen" ]; then
   [ "$stamp" = 1 ] || exit 0
 
   "$TMUX_BIN" set-option -p -t "$pane" -u @turn 2>/dev/null
+  wants_recheck "$sess"
 
   still=$("$TMUX_BIN" list-panes -t "$sess:$widx" -F '#{@turn}' 2>/dev/null | grep -c .)
   if [ "${still:-0}" -eq 0 ]; then
@@ -213,6 +260,10 @@ if [ "${1:-}" = "--needs-input" ]; then
   [ "$stamp" = 1 ] || exit 0
 
   "$TMUX_BIN" set-option -p -t "$pane" @turn input 2>/dev/null
+  # Which window is blocked, on the session, for the tab title to read. A
+  # session option because the tab title is a session-wide thing and this is
+  # the only signal in msesh that is allowed to reach outside the terminal.
+  "$TMUX_BIN" set-option -t "$sess" @wants "$widx" 2>/dev/null
   # Watch for output while the mark is up. Selecting a pane clears it, but a
   # pane you are *already* in is never selected again, so that mark had no way
   # to go. Anything the pane prints from here — including the echo of what you
@@ -245,35 +296,23 @@ if [ "${1:-}" = "--turn-end" ]; then
   # "finished a turn" that exists.
   "$TMUX_BIN" set-option -p -t "$pane" @turn waiting 2>/dev/null
 
-  # This used to exit here when the window was active and the session
-  # attached, on the theory that you were looking at it. The theory does not
-  # survive contact with a Terminal tab: tmux is told nothing about focus —
-  # not when a tab is switched, not even when another application takes the
-  # foreground; both were tested and no client-focus-in or -out ever arrived.
-  # "Attached with the active window" therefore means "the tab exists", which
-  # is not the same claim at all, and suppressing on it silenced the alert
-  # precisely when you were looking somewhere else.
-  #
-  # So it always reports. What makes the mark go away is answering — the
-  # --resumed path, driven by the agent's own "the human said something" event
-  # — rather than a guess about where your eyes are.
-
-  # Mark the window the way the silence path would, so the two agree about what
-  # a waiting window looks like. Activity monitoring goes on with it, so that a
-  # mark on the pane you are already sitting in still has a way to clear — see
+  # Marked, not announced — see turn_end_toast for why, and for the one case
+  # that still speaks. Activity monitoring goes on with the mark, so that a
+  # mark on the pane you are already sitting in still has a way to clear; see
   # the --needs-input path for why selecting cannot do it.
+  #
+  # Deliberately NOT setting @alert or the window's border styles. Those are
+  # the whole-window red, and they are for "something is blocked on you". A
+  # finished turn colours its own pane's tag and nothing else: in a four-pane
+  # window, three of them still working, reddening the lot said the wrong thing
+  # about three panes to say a true thing about one.
   "$TMUX_BIN" set-window-option -t "$sess:$widx" monitor-activity on 2>/dev/null
-  "$TMUX_BIN" set-window-option -t "$sess:$widx" @alert 1 2>/dev/null
-  "$TMUX_BIN" set-window-option -t "$sess:$widx" pane-border-style "fg=colour196,bold" 2>/dev/null
-  "$TMUX_BIN" set-window-option -t "$sess:$widx" pane-active-border-style "fg=colour196,bold" 2>/dev/null
-  # Suppress the silence scan's toast for this alert: the turn-end message is
-  # better in every way and arrives first, so the timer's version is noise.
+  # Suppress the silence scan for this pane: it would otherwise dim a window
+  # that has a fresh mark on it, twenty seconds after the mark went up.
   "$TMUX_BIN" set-window-option -t "$sess:$widx" @msesh_notified 1 2>/dev/null
   "$TMUX_BIN" refresh-client -S 2>/dev/null
 
-  prefix=$("$TMUX_BIN" show-options -gv prefix 2>/dev/null || echo prefix)
-  toast "msesh: ${label:-a pane} finished — $sess" \
-        "Window $widx is waiting on you. Go to the '$sess' tab, then press ${prefix:-prefix} $widx."
+  turn_end_toast "$sess" "$widx" "$label" "$sattached"
   exit 0
 fi
 
@@ -369,6 +408,7 @@ for row in ${rows[@]+"${rows[@]}"}; do
     while IFS= read -r _p; do
       [ -n "$_p" ] && "$TMUX_BIN" set-option -p -t "$_p" -u @turn 2>/dev/null
     done < <("$TMUX_BIN" list-panes -t "$sess:$widx" -F '#{pane_id}' 2>/dev/null)
+    wants_recheck "$sess"
     # The watch goes off with the marks it existed to clear, or a busy window
     # would keep resetting the silence countdown and never dim.
     "$TMUX_BIN" set-window-option -t "$sess:$widx" monitor-activity off 2>/dev/null

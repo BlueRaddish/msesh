@@ -61,6 +61,7 @@ claude = claude
 kode   = codex --full-auto
 gem    = gemini
 pinned = claude --effort xhigh
+mine   = myagent chat
 EOF
 cat > "$MSESH_AGENTS" <<'EOF'
 myagent = --reasoning | quick,deep
@@ -120,28 +121,40 @@ check "width 0 is one window"               "1 window(s)"   -- build 9 bash -w 0
 check "spill into windows"                  "3 window(s)"   -- build 9 bash -w 4 -n $D
 
 echo "agents and effort"
-check "ladder spreads low first"      "claude/low"    -- build 3 claude -e ladder -n $D
-check "ladder spreads high last"      "claude/high"   -- build 3 claude -e ladder -n $D
-check "last level repeats"            "claude/xhigh"  -- build 3 claude -e x -n $D
-check "abbreviations expand"          "claude/medium" -- build 1 claude -e m -n $D
-check "codex takes its own flag"      "model_reasoning_effort=high" -- build 1 kode -e h -n $D
-check "user-registered agent"         "myagent/quick" -- build '!myagent chat' -e quick -n $D
-check "agent without effort is skipped" "gem  "       -- build 1 gem -e high -n $D
-missing "shell panes never get effort" "bash/"        -- build 2 bash -e ladder -n $D
+# Effort rides on the spec now. The old -e list is gone, and these are the
+# rules that replaced it: one spec, one effort, no dependence on pane order.
+check "a spec carries its own effort"  "claude/low"    -- build claude/low -n $D
+check "each spec keeps its own"        "claude/high"   -- build claude/low claude/high -n $D
+check "abbreviations expand"           "claude/medium" -- build claude/m -n $D
+check "a count applies to the effort"  "4 pane(s)"     -- build 4 claude/high -n $D
+check "and so does the colon form"     "2 pane(s)"     -- build claude/h:2 -n $D
+check "codex takes its own flag"       "model_reasoning_effort=high" -- build kode/h -n $D
+check "user-registered agent"          "myagent chat --reasoning quick" -- build mine/quick -n $D
+check "an agent with no effort setting says so" \
+      "gemini has no effort setting"                   -- build gem/high -n $D
+check "a shell pane cannot take one"   "is not an agent" -- build bash/high -n $D
+missing "shell panes never get effort" "bash/"         -- build 2 bash -n $D
 check "a level the agent lacks is an error" \
-      "runs codex, which has no 'xhigh' effort"       -- build 1 kode -e x -n $D
+      "codex has no 'xhigh' effort"                    -- build kode/x -n $D
 check "the error names the levels it has" \
-      "it takes low, medium, high"                    -- build 1 kode -e x -n $D
+      "it takes low, medium, high"                     -- build kode/x -n $D
 check "a preset that spells the flag is left alone" \
-      "--effort xhigh"                                -- build 1 pinned -e low -n $D
+      "--effort xhigh"                                 -- build pinned/low -n $D
 missing "and is not given a second one" \
-      "--effort xhigh --effort low"                   -- build 1 pinned -e low -n $D
-# The bug this guards: an agent with no effort flag must not consume a level,
-# or every agent after it in the session shifts by one.
-check "skipped agents do not consume a level" \
-      "claude/low"                                    -- build gem claude kode -e l,h -n $D
-check "so the next agent still gets the second" \
-      "kode/high"                                     -- build gem claude kode -e l,h -n $D
+      "--effort xhigh --effort low"                    -- build pinned/low -n $D
+check "an empty effort is rejected"    "empty effort"  -- build claude/ -n $D
+# The whole reason the flag went away: this used to depend on which panes came
+# first and how many of them there were.
+check "an agent between two others changes nothing" \
+      "claude/low"                                     -- build gem claude/low kode/high -n $D
+check "and the one after it is untouched" \
+      "kode/high"                                      -- build gem claude/low kode/high -n $D
+
+echo "the -e flag, gone"
+check "-e says what replaced it"      "effort is part of the spec now" -- build 3 claude -e ladder -n $D
+check "-e spells out the new line"    "claude/low claude/medium claude/high" -- build 3 claude -e ladder -n $D
+check "--effort= is caught too"       "effort is part of the spec now" -- build 3 claude --effort=high -n $D
+check "and it names the layout"       "msesh build ladder" -- build 3 claude -e ladder -n $D
 
 echo "window names"
 check "windows are named in order"    "window repo"   -- build 4 bash -w 2 --windows repo,logs -n $D
@@ -165,21 +178,75 @@ check "a built-in cannot be removed"  "is a built-in" -- preset remove shell
 check "user presets survived the rewrite" "codex --full-auto" -- preset show kode
 
 echo "layouts"
-"$MSESH" layout make quad 4 claude -e l,m,h,x -d "$HOME" >/dev/null
+"$MSESH" layout make quad 4 claude/xhigh -d "$HOME" >/dev/null
 check "a layout builds its panes"     "4 pane(s)"     -- build quad -n
-check "with its own effort list"      "claude/xhigh"  -- build quad -n
+check "with its own effort"           "claude/xhigh"  -- build quad -n
 check "and names the session"         "would build 'quad'" -- build quad -n
 check "-s overrides the name"         "would build 'spike'" -- build quad -s spike -n
-check "an option overrides the file"  "claude/low"    -- build quad -e low -n
+check "an option overrides the file"  "2 window(s)"   -- build quad -w 2 -n
 check "a layout in a spec list is an error" \
       "is a layout"                                   -- build quad +pwsh -n $D
 check "so is a count in front of one"  "is a layout"  -- build 3 quad -n $D
 check "and adding one to a session"    "is a layout"  -- add quad -n $D
-check "layout list shows its panes"    "4 claude"     -- layout list
+check "layout list shows its panes"    "4 claude/xhigh" -- layout list
 check "layout show prints the file"    "layout=1"     -- layout show quad
 check "a missing layout is named"      "no layout 'nope'" -- layout show nope
 check "layout remove reports"          "removed layout 'quad'" -- layout remove quad
 check "and then build cannot find it"  "unknown preset 'quad'" -- build quad -n $D
+# A name that is a number would be unreachable: 'msesh build 3' is three panes,
+# and no amount of quoting makes it mean a layout.
+check "a numeric layout name is refused" "already means a pane count" -- layout make 3 bash
+check "and so is a numeric preset name"  "already means a pane count" -- preset make 7 bash
+
+echo "the ladder layout msesh ships"
+check "it needs no file"              "4 pane(s)"     -- build ladder -n $D
+check "a shell first"                 "shell "        -- build ladder -n $D
+check "then three rising efforts"     "claude/medium" -- build ladder -n $D
+check "list marks it as built in"     "(built-in)"    -- layout list
+check "show prints it"                "spec=claude/high" -- layout show ladder
+check "it cannot be removed"          "built into msesh" -- layout remove ladder
+
+echo "session names"
+# Two unnamed builds in one directory are two sessions. This one needs a real
+# tmux server — the name only bumps past a session that is actually up — so it
+# is the single place in this file that starts one, and it cleans up after
+# itself. Everything still goes through --dry-run: nothing is built, only
+# named.
+if command -v tmux >/dev/null 2>&1 && tmux -V >/dev/null 2>&1; then
+  nm_dir=$ROOT/namecheck; mkdir -p "$nm_dir"
+  nm=namecheck
+  tmux kill-session -t "=$nm"   2>/dev/null || true
+  tmux kill-session -t "=$nm-2" 2>/dev/null || true
+  ( cd "$nm_dir" && "$MSESH" build 1 -n ) >/dev/null 2>&1
+  check "an unnamed build takes the directory's name"         "would build '$nm'"   -- build 1 -n -d "$nm_dir" --session "$nm"
+  if tmux new-session -d -s "$nm" 2>/dev/null; then
+    out=$(cd "$nm_dir" && "$MSESH" build 1 -n 2>&1)
+    case $out in
+      *"would build '$nm-2'"*) PASS=$((PASS + 1)) ;;
+      *) FAIL=$((FAIL + 1)); printf '  FAIL a second unnamed build is numbered
+'
+         printf '%s
+' "$out" | sed 's/^/         /' ;;
+    esac
+    # rebuild and add mean the session that is already there, so neither bumps.
+    out=$(cd "$nm_dir" && "$MSESH" rebuild 1 -n 2>&1)
+    case $out in
+      *"would build '$nm'"*) PASS=$((PASS + 1)) ;;
+      *) FAIL=$((FAIL + 1)); printf '  FAIL rebuild does not bump the name
+'
+         printf '%s
+' "$out" | sed 's/^/         /' ;;
+    esac
+    # An explicit -s always means that session, however many are up.
+    check "an explicit name never bumps"           "would build '$nm'" -- build 1 -n -s "$nm"
+    tmux kill-session -t "=$nm" 2>/dev/null || true
+  else
+    port_skip "a second unnamed build is numbered" "tmux would not start a server"
+  fi
+else
+  port_skip "session naming" "no tmux on this machine"
+fi
+
 
 echo "manifests"
 # Written by hand rather than by a build: a dry run deliberately writes no
